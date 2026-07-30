@@ -114,9 +114,9 @@ per-entry field schema (`id`, `invariant`, `sites[]`, `expectFail`/`expectPass`,
 covers what the catalog is for.
 
 A site is either an anchor + replacement (a substring swap, refused unless the anchor matches
-exactly once and the replacement isn't a no-op) or a unified `patch`, for structural mutations an
-anchor can't express (reordering two migrations, say) — that residue stays hand-authored; the
-runner doesn't invent structural edits.
+exactly once and the replacement isn't a no-op) or a unified `patch` applied with `git apply`, for
+structural mutations an anchor can't express (reordering two migrations, say) — that residue stays
+hand-authored; the runner doesn't invent structural edits.
 
 ## Artifact lifetime
 

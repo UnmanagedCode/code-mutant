@@ -11,12 +11,12 @@ Build a project-local mutation-testing harness at `harness/mutation/`, driven by
    `setup`/`teardown`. Base every value on this project's *real* commands (its actual
    `package.json` scripts, CI config, or whatever the test suite is actually invoked with) — don't
    guess or reuse another project's values.
-2. **Pick `isolation`** from this project's real gates, not a default guess:
+2. **Pick `isolation`** from this project's real gates — and only fall back to a default when
+   they're genuinely ambiguous:
    - `"in-place"` — a mutant's command boots a server, needs a build cache, or depends on absolute
-     paths (e.g. a Playwright/browser gate, Next.js, anything with real filesystem state).
+     paths (e.g. a Playwright/browser gate, Next.js, anything with real filesystem state). Also the
+     fallback when the project's gates don't clearly call for either mode.
    - `"copy"` — pure in-process unit tests, or when `--jobs` parallelism is wanted.
-   - When neither clearly fits, default to `"in-place"` — it's the project default for a
-     genuinely ambiguous case.
 3. **Pick `runner`** by actually running the project's test command once and capturing its real
    stdout/stderr. Match it against the shipped adapters (`node-test`, `pytest`, `cargo`, `vitest`,
    `dotnet`) first. If the command emits no pass/fail/skip counts at all — a gate like

@@ -11,9 +11,9 @@ You (the reviewer) author and run every mutant — the implementer never mutates
 
 If this project has no `harness/mutation/config.json`, stop here — don't build one.
 `harness/mutation/` is committed project state; producing it is the implementer's job, not yours
-(you're commit-free and repo-invisible — every write you make stays gitignored and never shows up
-in `git status --porcelain`). Don't report a clean sweep either. Report to the conductor that the
-harness is missing, pointing it at `code-mutant`'s `scaffold/harness.md` to bootstrap one.
+(your own writes stay in gitignored `.mutation/`). Don't report a clean sweep either. Report to the
+conductor that the harness is missing, pointing it at `code-mutant`'s `scaffold/harness.md` to
+bootstrap one.
 
 ## 1. Enumerate claims
 
@@ -47,9 +47,8 @@ One minimal mutant per claim from step 1, and per candidate you selected in step
 edit that violates the invariant without breaking compilation, plus `whyNotEquivalent` stating why
 the change is genuinely behavior-changing, not equivalent. For a DI or provider seam, always mutate
 **both directions** — under-firing (a missed wire silently disables the guard) and over-firing (a
-stale entry wedges the operation). Full per-entry format (`sites[]`, `expectFail`/`expectPass`,
-`whyNotEquivalent`, optional `narrowCommand`/`waived`) is `code-mutant`'s `mutants.schema.md` — the
-catalog's authoritative schema.
+stale entry wedges the operation). Full per-entry format is specified in `code-mutant`'s
+`mutants.schema.md` — the catalog's authoritative schema.
 
 ## 6. Run
 
