@@ -1,0 +1,2 @@
+@../CLAUDE.md
+@CONVENTIONS.md
