@@ -18,7 +18,7 @@ Build a project-local mutation-testing harness at `harness/mutation/`, driven by
      fallback when the project's gates don't clearly call for either mode.
    - `"copy"` — pure in-process unit tests, or when `--jobs` parallelism is wanted.
 3. **Pick `runner`** by actually running the project's test command once and capturing its real
-   stdout/stderr. Match it against the shipped adapters (`node-test`, `pytest`, `cargo`, `vitest`,
+   stdout/stderr. Match it against the shipped adapters (`node-test`, `pytest`, `vitest`,
    `dotnet`) first. If the command emits no pass/fail/skip counts at all — a gate like
    `npx tsc --noEmit` or `npm run snap` — pick `runner: "exit-code"` instead, never a `custom`
    parser for output that has nothing to parse; its verdicts are the degraded signal grade
