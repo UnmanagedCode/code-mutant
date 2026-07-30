@@ -51,7 +51,7 @@ see [Artifact lifetime](#artifact-lifetime) below). `harness/mutation/config.jso
 |---|---|
 | `baselineCommand` | The project's real "run everything" command, used to measure a clean baseline before any mutant is trusted. |
 | `testCommand` | The command run per mutant, containing a `{tests}` placeholder the runner substitutes with the narrowed scope (see [Narrowing](#narrowing-and-signal-grades)). |
-| `runner` | Which output-parsing adapter to use: a shipped one (`node-test`, `pytest`, `cargo`, `vitest`, `dotnet`), `"exit-code"` for a gate with no pass/fail/skip counts (the degraded signal grade — kill/no-kill only), or `"custom"`, pointing at a project-local `.mjs` exporting `parse(stdout, stderr, exitCode)` for a stack with structured output no shipped adapter parses. |
+| `runner` | Which output-parsing adapter to use: a shipped one (`node-test`, `pytest`, `vitest`, `dotnet`), `"exit-code"` for a gate with no pass/fail/skip counts (the degraded signal grade — kill/no-kill only), or `"custom"`, pointing at a project-local `.mjs` exporting `parse(stdout, stderr, exitCode)` for a stack with structured output no shipped adapter parses. |
 | `isolation` | `"copy"` or `"in-place"` — see [Isolation modes](#isolation-modes). Overridable per invocation with `--copy`/`--in-place`. |
 | `preserve` | Paths to symlink into an isolated copy rather than duplicate (e.g. `node_modules`). |
 | `timeoutMs` | Per-mutant wall-clock cap; a hung command classifies as `TIMEOUT`, not counted as a kill. |
