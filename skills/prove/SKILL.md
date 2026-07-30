@@ -5,16 +5,15 @@ description: Mutation-prove the implementer's test-coverage claims for a pending
 
 # Prove
 
-Mutation-verify the coverage claims under review. You (the reviewer) author and run every mutant —
-the implementer never mutates its own claims, because it can only ever think to mutate what its own
-tests already catch. You produce findings; you never commit, and the implementer receives no
-mutants, only your report.
+You (the reviewer) author and run every mutant — the implementer never mutates its own claims.
 
 ## 0. Harness check
 
-If this project has no `harness/mutation/config.json`, stop here — don't build one (you're
-read-only) and don't report a clean sweep. Report to the conductor that the harness is missing,
-pointing it at `code-mutant`'s `scaffold/harness.md` to bootstrap one.
+If this project has no `harness/mutation/config.json`, stop here — don't build one.
+`harness/mutation/` is committed project state; producing it is the implementer's job, not yours
+(you're commit-free and repo-invisible — every write you make stays gitignored and never shows up
+in `git status --porcelain`). Don't report a clean sweep either. Report to the conductor that the
+harness is missing, pointing it at `code-mutant`'s `scaffold/harness.md` to bootstrap one.
 
 ## 1. Enumerate claims
 
@@ -37,19 +36,20 @@ proven.
 
 ## 4. Find candidates
 
-Run `candidates --base` to list diff hunks no catalog mutant covers yet. **It lists, you target** —
-round 1 the catalog is empty so the list is the whole diff; don't mutate one-per-hunk, that's an
-exhaustive sweep, not this practice. Select the hunks you judge invariant-bearing — the ones a test
-claims to pin.
+Run `candidates` against the review's base branch to list diff hunks no catalog mutant covers yet.
+**It lists, you target** — round 1 the catalog is empty so the list is the whole diff; don't
+mutate one-per-hunk, that's an exhaustive sweep, not this practice. Select the hunks you judge
+invariant-bearing — the ones a test claims to pin.
 
 ## 5. Author mutants
 
 One minimal mutant per claim from step 1, and per candidate you selected in step 4: the smallest
 edit that violates the invariant without breaking compilation, plus `whyNotEquivalent` stating why
-the change is genuinely behavior-changing, not equivalent. A double-guarded invariant needs a
-multi-site mutant (multiple `sites[]`), not two separate single-site ones. For a DI or provider
-seam, always mutate **both directions** — under-firing (a missed wire silently disables the guard)
-and over-firing (a stale entry wedges the operation).
+the change is genuinely behavior-changing, not equivalent. For a DI or provider seam, always mutate
+**both directions** — under-firing (a missed wire silently disables the guard) and over-firing (a
+stale entry wedges the operation). Full per-entry format (`sites[]`, `expectFail`/`expectPass`,
+`whyNotEquivalent`, optional `narrowCommand`/`waived`) is `code-mutant`'s `mutants.schema.md` — the
+catalog's authoritative schema.
 
 ## 6. Run
 
@@ -57,7 +57,8 @@ Run narrow by default. Prefer `--copy` — you don't own the shared worktree and
 fall back to `--in-place` only when a mutant's gate genuinely needs a real tree (a server boot, a
 browser gate). A structural mutation with no anchor+replace form (e.g. reordering two migrations)
 uses the `patch` site form instead — that residue stays hand-authored; the runner doesn't invent
-structural edits for you.
+structural edits for you. For exact command syntax, `mutate.mjs --help` or the project's
+`harness/mutation/README.md` is authoritative.
 
 ## 7. Interpret
 
@@ -82,6 +83,5 @@ produced it (counted vs. exit-code), baseline-vs-mutant counts, and which test s
 ## 9. Carry waivers back
 
 When the conductor judges a survivor not worth fixing, mark that mutant `waived` (with the reason)
-in `.mutation/mutants.json` before you finish — otherwise it survives again next round and gets
-re-reported forever. Waived mutants still run; report them separately from open survivors, not
-folded into the count.
+in `.mutation/mutants.json` before you finish. Waived mutants still run; report them separately
+from open survivors, not folded into the count.

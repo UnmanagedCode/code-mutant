@@ -2,8 +2,7 @@
 
 Build a project-local mutation-testing harness at `harness/mutation/`, driven by the shared
 `code-mutant` runner (`mutate.mjs`) as a sibling project — so a reviewer can later run
-`/code-mutant:prove` against this project. This is a one-time bootstrap: read the project's actual
-test setup and adapt to it, don't copy another project's config verbatim.
+`/code-mutant:prove` against this project. This is a one-time bootstrap.
 
 ## What to build
 
@@ -16,11 +15,18 @@ test setup and adapt to it, don't copy another project's config verbatim.
    - `"in-place"` — a mutant's command boots a server, needs a build cache, or depends on absolute
      paths (e.g. a Playwright/browser gate, Next.js, anything with real filesystem state).
    - `"copy"` — pure in-process unit tests, or when `--jobs` parallelism is wanted.
-3. **Pick `runner`** by actually running the project's test command once, capturing its real
-   stdout/stderr, and matching it against the shipped adapters (`node-test`, `pytest`, `cargo`,
-   `vitest`, `dotnet`). Only write a project-local `custom` parser (a `.mjs` exporting
-   `parse(stdout, stderr, exitCode)`) when none fit — and then prove it against that captured
-   output before finishing, not just assume it works.
+   - When neither clearly fits, default to `"in-place"` — it's the project default for a
+     genuinely ambiguous case.
+3. **Pick `runner`** by actually running the project's test command once and capturing its real
+   stdout/stderr. Match it against the shipped adapters (`node-test`, `pytest`, `cargo`, `vitest`,
+   `dotnet`) first. If the command emits no pass/fail/skip counts at all — a gate like
+   `npx tsc --noEmit` or `npm run snap` — pick `runner: "exit-code"` instead, never a `custom`
+   parser for output that has nothing to parse; its verdicts are the degraded signal grade
+   (kill/no-kill only), and a per-mutant `narrowCommand` is how an exit-code gate gets narrowed.
+   Only write a project-local `custom` parser (a `.mjs` exporting `parse(stdout, stderr,
+   exitCode)`) when the command *does* produce structured output but none of the shipped adapters
+   parse it — then prove the parser against that captured output before finishing, not just assume
+   it works.
 4. Write `harness/mutation/README.md` documenting how to invoke the harness for *this* project.
    Command syntax and flags are `mutate.mjs`'s own CLI, so read it directly (`--help` or its
    source) rather than copying examples from another project's harness, which can drift.
@@ -34,5 +40,3 @@ test setup and adapt to it, don't copy another project's config verbatim.
 - Don't reimplement anything `mutate.mjs` already does (anchor resolution, restore, classification,
   isolation) — the harness is config + a README, not code, except the narrow `custom`-parser case
   above.
-- Don't hard-code assumptions from a different project; read this project's actual test command and
-  gates to decide `isolation`/`runner`.
