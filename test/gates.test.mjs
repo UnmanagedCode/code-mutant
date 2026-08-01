@@ -37,10 +37,10 @@ const MUTANT = {
   whyNotEquivalent: 'denies a backend the guard must admit',
 };
 
-async function run(repo, mutants = [MUTANT], overrides = {}) {
+async function run(repo, mutants = [MUTANT], overrides = {}, { allowDirty = false } = {}) {
   const config = loadConfig({ repoRoot: repo.root, overrides });
   const adapter = await loadAdapter(config.runner, { configDir: config.configDir });
-  return execute({ config, adapter, mutants });
+  return execute({ config, adapter, mutants, allowDirty });
 }
 
 describe('baseline gate', () => {
@@ -165,7 +165,10 @@ describe('canary gate', () => {
           };
         }
       `);
-      const report = await run(repo, []);
+      // The just-written parse.mjs is untracked -- deliberately, since committing
+      // fixture setup mid-test would be its own can of worms -- so this run needs
+      // the same override an implementer's uncommitted work would need.
+      const report = await run(repo, [], {}, { allowDirty: true });
       assert.equal(report.gates.baseline.outcome, 'passed');
       assert.equal(report.gates.canary.status, CanaryStatus.FAILED);
       assert.match(report.gates.canary.detail, /compile\/parse break/);
@@ -189,7 +192,7 @@ describe('canary gate', () => {
                    failedTests: [], compileError: false, counts: {} };
         }
       `);
-      const report = await run(repo, []);
+      const report = await run(repo, [], {}, { allowDirty: true });
       assert.equal(report.gates.baseline.outcome, 'passed');
       assert.equal(report.gates.canary.status, CanaryStatus.FAILED);
       assert.match(report.gates.canary.detail, /cannot synthesise a canary/);

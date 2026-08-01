@@ -19,6 +19,7 @@ import { AdapterError, loadAdapter } from './lib/adapters/index.mjs';
 import { listCandidates } from './lib/candidates.mjs';
 import { CatalogError, assertMutationDirIgnored, loadCatalog, writeResults } from './lib/catalog.mjs';
 import { ConfigError, loadConfig } from './lib/config.mjs';
+import { checkCleanTree } from './lib/gates.mjs';
 import { installGuard } from './lib/guard.mjs';
 import { EXIT_CODE_MEANINGS, ExitCode, exitCodeFor, formatReport, toJson } from './lib/report.mjs';
 import { execute } from './lib/runner.mjs';
@@ -29,24 +30,28 @@ import { WorkspaceError, findRepoRoot } from './lib/workspace.mjs';
 const HELP = `code-mutant -- mutation-verified coverage proving
 
 USAGE
-  node mutate.mjs baseline                    [--copy|--in-place] [--json]
-  node mutate.mjs run [--id <id> ...] [--all] [--copy|--in-place] [--jobs N] [--json]
+  node mutate.mjs baseline                    [--copy|--in-place] [--allow-dirty] [--json]
+  node mutate.mjs run [--id <id> ...] [--all] [--copy|--in-place] [--jobs N]
+                      [--base <branch>] [--allow-dirty] [--json]
   node mutate.mjs probe --file <path> --anchor <text> --replace <text>
                         --expect-fail <test> [...] [--expect-pass <test> ...]
                         [--copy|--in-place] [--json]
   node mutate.mjs candidates --base <branch>  [--json]
 
 COMMANDS
-  baseline     Run both trust gates and stop. Measures the unmutated
-               baselineCommand in the configured isolation mode (pass/fail/skip
-               counts) and synthesises a canary. Nothing else is trustworthy
-               until this is green and the canary comes back KILLED.
+  baseline     Run the trust gates and stop: clean-tree, baseline, canary.
+               Measures the unmutated baselineCommand in the configured
+               isolation mode (pass/fail/skip counts) and synthesises a canary.
+               Nothing else is trustworthy until this is green and the canary
+               comes back KILLED.
   run          Run catalog mutants from .mutation/mutants.json. Per mutant:
                resolve site(s) -> refuse an ambiguous or no-op edit -> measure the
                narrow scope unmutated -> apply -> run -> classify -> restore.
-               Both gates run first; there is deliberately no way to skip them.
+               All three gates run first; there is deliberately no way to skip
+               them short of --allow-dirty.
   probe        One ad-hoc mutation, no catalog entry written. For exploring a
-               mutation before adding it to the catalog.
+               mutation before adding it to the catalog. The clean-tree gate is
+               a warning here, not a refusal -- probe is the escape hatch.
   candidates   List diff hunks (merge-base..working tree) that no catalog mutant
                covers. ADVISORY: it lists, you target. Do not author one mutant
                per hunk -- that is an exhaustive sweep, not this practice.
@@ -57,7 +62,12 @@ FLAGS
   --copy             Force copy isolation for this invocation.
   --in-place         Force in-place isolation for this invocation.
   --jobs N           Concurrent mutants (copy mode only; clamped to 1 in-place).
-  --base <branch>    Base branch/commit for candidates.
+  --base <branch>    run: overrides config.json's baseBranch for the
+                     empty-diff-vs-base gate. candidates: base branch/commit
+                     (required there; no config fallback).
+  --allow-dirty      baseline/run: proceed despite a dirty worktree instead of
+                     refusing. Every verdict from that invocation is labelled
+                     non-reproducible, in both the matrix and --json.
   --file <path>      probe: file to mutate.
   --anchor <text>    probe: exact substring to replace; must match exactly once.
   --replace <text>   probe: replacement text; must differ from the anchor.
@@ -110,7 +120,25 @@ config.json (harness/mutation/config.json)
                    ["node_modules"].
   timeoutMs        Per-command wall-clock cap. Default 120000.
   jobs             Copy-mode concurrency. Default 1.
+  baseBranch       Optional. run's empty-diff-vs-base gate compares against
+                   this branch; --base overrides it per invocation. Unset (or
+                   equal to the branch HEAD is on) reports NOT-ESTABLISHED
+                   rather than silently not checking.
   setup/teardown   Optional commands run around every measured command.
+
+TRUST GATES
+  clean-tree        baseline/run only (probe warns instead). Refuses when the
+                     worktree has uncommitted or untracked-and-not-gitignored
+                     changes -- mutation must run against committed, re-runnable
+                     state. --allow-dirty overrides it (labelled non-reproducible).
+  empty-diff-vs-base run only. Refuses when there is no diff between baseBranch
+                     and the working tree -- a clean tree identical to its base
+                     has nothing committed to mutate, and mutating it would
+                     report a false clean sweep. NOT-ESTABLISHED (not a
+                     refusal) when no baseBranch is configured, or it names the
+                     branch HEAD is already on.
+  baseline           See the baseline command above.
+  canary             Synthesised per run, never committed; see mutants.schema.md.
 
 RESTORE
   copy      -- restore is discarding the copy, which was taken from the working
@@ -130,7 +158,7 @@ The catalog format is specified in mutants.schema.md, which also documents the
 --json report shape and the adapter parse() contract.
 `;
 
-const BOOLEAN_FLAGS = new Set(['--all', '--copy', '--in-place', '--json', '--help', '-h']);
+const BOOLEAN_FLAGS = new Set(['--all', '--copy', '--in-place', '--json', '--help', '-h', '--allow-dirty']);
 const REPEATABLE_FLAGS = new Set(['--id', '--expect-fail', '--expect-pass']);
 const VALUE_FLAGS = new Set([
   '--jobs', '--base', '--file', '--anchor', '--replace', ...REPEATABLE_FLAGS,
@@ -180,15 +208,22 @@ function runId() {
   return `${new Date().toISOString().replace(/[:.]/g, '-')}`;
 }
 
-async function buildContext(flags, log) {
+async function buildContext(flags, log, { allowBaseOverride = false } = {}) {
   const repoRoot = findRepoRoot(process.cwd());
   const jobsFlag = flags['--jobs'] === undefined ? undefined : Number(flags['--jobs']);
   if (jobsFlag !== undefined && (!Number.isInteger(jobsFlag) || jobsFlag < 1)) {
     throw new Error('--jobs needs a positive integer');
   }
+  if (!allowBaseOverride && flags['--base'] !== undefined) {
+    throw new Error('--base only applies to `run` (the empty-diff-vs-base gate) and `candidates` (try --help)');
+  }
   const config = loadConfig({
     repoRoot,
-    overrides: { isolation: isolationOverride(flags), jobs: jobsFlag },
+    overrides: {
+      isolation: isolationOverride(flags),
+      jobs: jobsFlag,
+      baseBranch: allowBaseOverride ? flags['--base'] : undefined,
+    },
     warn: (message) => log(`note: ${message}`),
   });
   const adapter = await loadAdapter(config.runner, { configDir: config.configDir });
@@ -208,14 +243,19 @@ async function commandBaseline(flags, log) {
   const { config, adapter } = await buildContext(flags, log);
   // Both gates and nothing else: `execute` with an empty mutant list runs the
   // baseline measurement and the canary, which is what the reviewer's gate step
-  // needs to see in one command.
-  const report = await execute({ config, adapter, mutants: [], log });
+  // needs to see in one command. The clean-tree check runs here too (a baseline
+  // measured on a dirty tree is exactly how a bogus skip-count discrepancy got
+  // into a real review), but not the empty-diff-vs-base check: baseline does not
+  // touch catalog entries, so there is nothing "no committed work" would protect.
+  const report = await execute({
+    config, adapter, mutants: [], log, allowDirty: Boolean(flags['--allow-dirty']),
+  });
   report.command = 'baseline';
   return emit(report, flags);
 }
 
 async function commandRun(flags, lists, log) {
-  const { config, adapter, repoRoot } = await buildContext(flags, log);
+  const { config, adapter, repoRoot } = await buildContext(flags, log, { allowBaseOverride: true });
   const ids = lists['--id'] ?? [];
   if (!ids.length && !flags['--all']) {
     throw new Error('run needs either --all or at least one --id (refusing to guess which mutants you meant)');
@@ -241,7 +281,15 @@ async function commandRun(flags, lists, log) {
   // it only once the suite has been run several times would waste the whole run.
   assertMutationDirIgnored(repoRoot);
 
-  const report = await execute({ config, adapter, mutants, log });
+  const report = await execute({
+    config,
+    adapter,
+    mutants,
+    log,
+    allowDirty: Boolean(flags['--allow-dirty']),
+    checkBaseDiff: true,
+    base: config.baseBranch,
+  });
   report.command = 'run';
   report.catalog = catalog.path;
   report.resultsFile = writeResults(repoRoot, runId(), toJson(report));
@@ -273,7 +321,16 @@ async function commandProbe(flags, lists, log) {
 
   assertMutationDirIgnored(repoRoot);
 
-  const report = await execute({ config, adapter, mutants: [mutant], log });
+  // probe is the ad-hoc escape hatch for exploring a mutation before it goes in
+  // the catalog, so a dirty tree is worth a warning, not a refusal.
+  const clean = checkCleanTree(repoRoot);
+  if (!clean.clean) {
+    log(`warning: worktree has uncommitted or untracked changes -- probe proceeds anyway (it is exploratory, not recorded in the catalog):\n${clean.status}`);
+  }
+
+  const report = await execute({
+    config, adapter, mutants: [mutant], log, enforceCleanTree: false,
+  });
   report.command = 'probe';
   report.resultsFile = writeResults(repoRoot, `probe-${runId()}`, toJson(report));
   const code = emit(report, flags);

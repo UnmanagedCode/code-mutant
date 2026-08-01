@@ -38,7 +38,10 @@ const MUTANT = {
 async function runInPlace(repo, mutants) {
   const config = loadConfig({ repoRoot: repo.root, overrides: { isolation: 'in-place' } });
   const adapter = await loadAdapter(config.runner, { configDir: config.configDir });
-  return execute({ config, adapter, mutants });
+  // These fixtures are deliberately dirty -- that is the whole point of this
+  // file -- so the clean-tree gate is bypassed rather than disabled, the same
+  // way a real worker's uncommitted work would need --allow-dirty.
+  return execute({ config, adapter, mutants, allowDirty: true });
 }
 
 describe('in-place restore with uncommitted work present', () => {
@@ -143,6 +146,7 @@ describe('copy mode', () => {
           expectFail: [],
           expectPass: ['test/guard.test.mjs::allows ollama'],
         }],
+        allowDirty: true,
       });
 
       assert.equal(config.isolation, 'copy');

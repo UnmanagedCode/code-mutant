@@ -72,7 +72,10 @@ async function interruptMidRun(signal) {
     const bytesBefore = readBytes(repo.root, 'src/guard.mjs');
     const statusBefore = repo.status();
 
-    const child = spawn(process.execPath, [RUNNER, 'run', '--all', '--in-place'], {
+    // The fixture is deliberately dirty (see UNCOMMITTED above), so the new
+    // clean-tree gate needs the same override a real worker's uncommitted work
+    // would need -- without it the run refuses before the mutant command starts.
+    const child = spawn(process.execPath, [RUNNER, 'run', '--all', '--in-place', '--allow-dirty'], {
       cwd: repo.root,
       env: childEnv({
         CM_FAKE_STATE: stateFile,

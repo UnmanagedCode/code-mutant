@@ -129,7 +129,38 @@ before the run):
 | `scope-empty` | The narrowed scope ran **zero tests**. Never reported as `SURVIVED`. |
 | `canary-not-established` | Exit-code mode: the gate could not be shown to observe a deliberate break in the mutated file, so its "survivor" means nothing. |
 | `timed-out` | The command exceeded `timeoutMs`. |
+| `dirty-tree` | Trust gate, `baseline`/`run` (before baseline and canary): the worktree has uncommitted or untracked-and-not-gitignored changes. `--allow-dirty` overrides it; `probe` only warns. See [The clean-tree gate](#the-clean-tree-gate). |
+| `empty-diff-vs-base` | Trust gate, `run` only: `baseBranch` is configured, distinct from the branch HEAD is on, and there is no diff against it — nothing committed to mutate. See [The clean-tree gate](#the-clean-tree-gate). |
 | — | Writing under `.mutation/` when it is not gitignored is a **hard stop** (exit 4), not a warning: this run would otherwise leave visible untracked files in a worktree it does not own and cannot commit a fix to. |
+
+## The clean-tree gate
+
+The third trust gate, alongside baseline and canary: mutation must run against committed state, so a
+survivor is re-runnable against a sha by anyone, and a restore bug degrades from destroying
+unrecoverable work to a recoverable git object. Two independent checks, both run before baseline and
+canary:
+
+- **dirty-tree** (`baseline` and `run`; `probe` warns instead of refusing) — refuses when
+  `git status --porcelain` reports anything. That already excludes gitignored paths by default, so a
+  gitignored `.mutation/` never trips it. `--allow-dirty` overrides the refusal; every verdict from
+  that invocation is then labelled **non-reproducible**, in the matrix (a `repro` column reading
+  `NO (dirty)`) and in `--json` (`reproducible: false`, top-level and per-result) — the same way an
+  exit-code-mode verdict is labelled with its weaker grade.
+- **empty-diff-vs-base** (`run` only) — compares `baseBranch` (`harness/mutation/config.json`, or
+  `--base` to override it per invocation) against the working tree. A gate that did not run must never
+  read the same as one that passed, so this is `NOT-ESTABLISHED` — not a refusal, not `PASSED` — when
+  either: no `baseBranch` is configured, or it names the branch HEAD is already on (comparing a branch
+  to itself would refuse every run made directly on that branch, which is a false refusal, not a
+  finding). Only when `baseBranch` is configured AND distinct does an empty diff become the hard
+  `empty-diff-vs-base` refusal.
+
+Neither check relaxes the restore contract: no git operation is ever used for restore, and copy mode
+still copies the working tree rather than cloning from HEAD. The precondition can be violated (dirty,
+or no base configured), so correctness must not depend on it — these checks only make that state
+visible rather than silently trusted.
+
+The mutated sha (`report.mutatedSha`, `git rev-parse HEAD`) is recorded on every report so a survivor
+finding can be pointed at exactly the commit it was found against.
 
 ## Worked example
 
@@ -180,7 +211,12 @@ before the run):
   jobs:      number,
   workspaceRoot: string,
   adapter:   { name, grade: "counted"|"exit-code", modulePath },
+  mutatedSha:    string|null,     // `git rev-parse HEAD` -- points a survivor at a re-runnable commit
+  reproducible:  boolean,         // false only when --allow-dirty was used to proceed on a dirty tree
   gates: {
+    cleanTree: { outcome: "passed"|"failed", code: "dirty-tree"|null, dirty, allowedDirty, detail },
+    baseDiff:  { outcome: "passed"|"failed"|"not-established", code: "empty-diff-vs-base"|null,
+                 base, currentBranch, mergeBase, detail },   // `run` only
     baseline: { outcome: "passed"|"failed", command, counts: {passed,failed,skipped,ran}|null, exitCode, detail },
     canary:   { outcome, status: "KILLED"|"FAILED"|"NOT-ESTABLISHED", grade, target, detail }
   },
@@ -190,6 +226,7 @@ before the run):
     reason,                       // machine-readable refusal/imprecision code, or null
     detail,                       // one human sentence
     grade,                        // WHICH SIGNAL GRADE PRODUCED THIS VERDICT
+    reproducible,                 // same run-level value as above, copied onto every result
     narrowing: { mode: "file"|"names"|"command"|"whole", command, scopes,
                  requestedNames, downgradeReason, placeholder },
     mutation:  [ { kind: "anchor", file, edits: [{anchor, replacement, line}] }
@@ -219,7 +256,7 @@ a mutant runs a narrowed scope, so comparing those two would show the narrowing,
 |---|---|
 | 0 | No un-waived survivors, every mutant produced a verdict, gates passed. |
 | 1 | At least one **un-waived survivor** — a coverage claim is false. |
-| 2 | Baseline or canary gate failed; no verdict is interpretable. |
+| 2 | A trust gate failed (clean-tree, empty-diff-vs-base, baseline, or canary); no verdict is interpretable. |
 | 3 | Restore or the clean-tree assertion failed — inspect the tree by hand. |
 | 4 | Usage, config, or catalog error. |
 | 5 | No survivors, but some mutant produced **no verdict** (`ERROR`/`TIMEOUT`) — not a clean proof. |
