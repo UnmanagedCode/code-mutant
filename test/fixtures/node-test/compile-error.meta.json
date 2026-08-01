@@ -1,0 +1,7 @@
+{
+  "tool": "node",
+  "version": "v24.18.0",
+  "command": "node --test",
+  "exitCode": 1,
+  "capturedBy": "test/fixtures/capture/capture.sh"
+}

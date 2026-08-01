@@ -1,0 +1,12 @@
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  proj -> /tmp/code-mutant-capture/dn/proj/bin/Debug/net8.0/proj.dll
+Test run for /tmp/code-mutant-capture/dn/proj/bin/Debug/net8.0/proj.dll (.NETCoreApp,Version=v8.0)
+VSTest version 17.11.1 (x64)
+
+Starting test execution, please wait...
+A total of 1 test files matched the specified pattern.
+[xUnit.net 00:00:00.09]     proj.UnitTest1.Skipped [SKIP]
+  Skipped proj.UnitTest1.Skipped [1 ms]
+
+Passed!  - Failed:     0, Passed:     1, Skipped:     1, Total:     2, Duration: 5 ms - proj.dll (net8.0)

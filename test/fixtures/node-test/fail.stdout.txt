@@ -1,0 +1,60 @@
+✔ adds (0.470854ms)
+✖ subtracts (0.534229ms)
+▶ nested
+  ✖ inner failure (3.439963ms)
+✖ nested (3.579077ms)
+ℹ tests 3
+ℹ suites 1
+ℹ pass 1
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 42.712355
+
+✖ failing tests:
+
+test at test/math.test.mjs:5:1
+✖ subtracts (0.534229ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  1 !== 99
+  
+      at TestContext.<anonymous> (file:///tmp/code-mutant-capture/node/test/math.test.mjs:5:34)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1325:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:911:18)
+      at Test.postRun (node:internal/test_runner/test:1465:19)
+      at Test.run (node:internal/test_runner/test:1390:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 99,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/math.test.mjs:7:3
+✖ inner failure (3.439963ms)
+  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+  
+    assert.ok(false)
+  
+      at TestContext.<anonymous> (file:///tmp/code-mutant-capture/node/test/math.test.mjs:7:40)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1325:25)
+      at Test.start (node:internal/test_runner/test:1191:17)
+      at node:internal/test_runner/test:1792:71
+      at node:internal/per_context/primordials:466:82
+      at new Promise (<anonymous>)
+      at new SafePromise (node:internal/per_context/primordials:435:3)
+      at node:internal/per_context/primordials:466:9
+      at Array.map (<anonymous>) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }

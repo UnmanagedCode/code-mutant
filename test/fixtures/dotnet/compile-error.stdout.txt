@@ -1,0 +1,4 @@
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+/tmp/code-mutant-capture/dn/proj/UnitTest1.cs(6,47): error CS1525: Invalid expression term ';' [/tmp/code-mutant-capture/dn/proj/proj.csproj]
+/tmp/code-mutant-capture/dn/proj/UnitTest1.cs(6,47): error CS1026: ) expected [/tmp/code-mutant-capture/dn/proj/proj.csproj]
