@@ -1,0 +1,28 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.5, pytest-9.1.1, pluggy-1.6.0
+rootdir: /tmp/code-mutant-capture/py
+collected 3 items
+
+tests/test_math.py .FF                                                   [100%]
+
+=================================== FAILURES ===================================
+________________________________ test_subtracts ________________________________
+
+    def test_subtracts():
+>       assert 2 - 1 == 99
+E       assert (2 - 1) == 99
+
+tests/test_math.py:6: AssertionError
+_____________________________ TestGroup.test_inner _____________________________
+
+self = <test_math.TestGroup object at 0x7ba7d97f96d0>
+
+    def test_inner(self):
+>       raise ValueError("boom")
+E       ValueError: boom
+
+tests/test_math.py:11: ValueError
+=========================== short test summary info ============================
+FAILED tests/test_math.py::test_subtracts - assert (2 - 1) == 99
+FAILED tests/test_math.py::TestGroup::test_inner - ValueError: boom
+========================= 2 failed, 1 passed in 0.01s ==========================

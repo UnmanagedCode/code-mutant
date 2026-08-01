@@ -1,0 +1,2 @@
+[xUnit.net 00:00:00.12]     proj.UnitTest1.Subtracts [FAIL]
+[xUnit.net 00:00:00.12]     proj.UnitTest1.Throws [FAIL]

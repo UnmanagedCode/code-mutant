@@ -1,0 +1,8 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.5, pytest-9.1.1, pluggy-1.6.0
+rootdir: /tmp/code-mutant-capture/py
+collected 3 items
+
+tests/test_math.py .sx                                                   [100%]
+
+=================== 1 passed, 1 skipped, 1 xfailed in 0.01s ====================

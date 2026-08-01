@@ -1,0 +1,7 @@
+{
+  "tool": "pytest",
+  "version": "pytest 9.1.1",
+  "command": "/tmp/code-mutant-capture/py/venv/bin/python3 -m pytest",
+  "exitCode": 2,
+  "capturedBy": "test/fixtures/capture/capture.sh"
+}

@@ -1,0 +1,11 @@
+✔ adds (0.470458ms)
+﹣ skipped for a reason (0.070262ms) # not implemented
+✔ todo item (0.066944ms) # TODO
+ℹ tests 3
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 1
+ℹ duration_ms 42.775789

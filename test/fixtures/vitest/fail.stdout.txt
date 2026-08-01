@@ -1,0 +1,13 @@
+
+ RUN  v4.1.10 /tmp/code-mutant-capture/vt
+
+ ❯ test/math.test.js (3 tests | 2 failed) 11ms
+   ✓ adds 2ms
+   × subtracts 7ms
+     × inner failure 1ms
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 1 passed (3)
+   Start at  20:18:59
+   Duration  135ms (transform 21ms, setup 0ms, import 36ms, tests 11ms, environment 0ms)
+

@@ -1,0 +1,7 @@
+{
+  "tool": "vitest",
+  "version": "vitest/4.1.10 linux-x64 node-v24.18.0",
+  "command": "/tmp/code-mutant-capture/vt/node_modules/.bin/vitest run --reporter=default",
+  "exitCode": 1,
+  "capturedBy": "test/fixtures/capture/capture.sh"
+}

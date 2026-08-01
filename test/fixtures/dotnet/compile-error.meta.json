@@ -1,0 +1,7 @@
+{
+  "tool": "dotnet",
+  "version": "8.0.423",
+  "command": "dotnet test",
+  "exitCode": 1,
+  "capturedBy": "test/fixtures/capture/capture.sh"
+}
