@@ -311,7 +311,9 @@ describe('exit-code grade gates', () => {
       const report = await run(repo, []);
       assert.equal(report.gates.baseline.outcome, 'passed');
       assert.equal(report.gates.canary.status, CanaryStatus.NOT_ESTABLISHED);
-      assert.equal(report.gates.canary.outcome, 'passed');
+      // NOT rendered as 'passed': a reader must be able to tell "the gate
+      // observed a failure" from "the gate was never asked to prove it could".
+      assert.equal(report.gates.canary.outcome, 'not-established');
       assert.match(report.gates.canary.detail, /established.*per-mutant during `run`/);
       assert.equal(exitCodeFor(report), ExitCode.CLEAN);
     } finally { repo.cleanup(); }
@@ -363,6 +365,21 @@ describe('exit-code grade gates', () => {
       assert.equal(result.grade, 'exit-code');
       assert.equal(result.canary, null, 'no per-mutant canary needed for a kill');
       assert.match(result.detail, /precision was NOT established/);
+    } finally { repo.cleanup(); }
+  });
+});
+
+describe('reported jobs reflects effective concurrency', () => {
+  test('in-place isolation reports jobs:1 even if config.jobs was never clamped', async () => {
+    const repo = makeRepo({ files: guardFiles(), config: { isolation: 'in-place', jobs: 1 }, label: 'report-jobs' });
+    try {
+      const config = loadConfig({ repoRoot: repo.root });
+      // Simulate a caller that built (or mutated) a config object without going
+      // through loadConfig's own clamp -- the report must not blindly repeat it.
+      config.jobs = 4;
+      const adapter = await loadAdapter(config.runner, { configDir: config.configDir });
+      const report = await execute({ config, adapter, mutants: [] });
+      assert.equal(report.jobs, 1, 'in-place isolation always runs serially, whatever config.jobs claims');
     } finally { repo.cleanup(); }
   });
 });

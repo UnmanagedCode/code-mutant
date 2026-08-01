@@ -42,7 +42,9 @@ const EXPECTATIONS = {
     pass: { passed: 2, failed: 0, skipped: 0, ran: 2, compileError: false, failedTests: [] },
     fail: {
       passed: 1, failed: 2, skipped: 0, ran: 3, compileError: false,
-      failedTests: ['test/math.test.mjs::subtracts', 'test/math.test.mjs::inner failure'],
+      // The failing-tests summary block alone only carries leaf names; the
+      // nested one's full path comes from cross-referencing the inline block.
+      failedTests: ['test/math.test.mjs::subtracts', 'test/math.test.mjs::nested > inner failure'],
     },
     skip: { passed: 1, failed: 0, skipped: 1, ran: 3, compileError: false, failedTests: [] },
     'compile-error': { passed: 0, failed: 1, skipped: 0, ran: 1, compileError: true },
@@ -55,7 +57,9 @@ const EXPECTATIONS = {
     },
     // 1 passed, 1 skipped, 1 xfailed -- xfail counts toward `ran` but is not a failure.
     skip: { passed: 1, failed: 0, skipped: 1, ran: 3, compileError: false, failedTests: [] },
-    'compile-error': { passed: 0, failed: 1, skipped: 0, ran: 1, compileError: true },
+    // A collection error means zero tests ran, even though the banner's error
+    // count would otherwise sum into `ran` as though something had.
+    'compile-error': { passed: 0, failed: 1, skipped: 0, ran: 0, compileError: true },
   },
   vitest: {
     pass: { passed: 2, failed: 0, skipped: 0, ran: 2, compileError: false, failedTests: [] },
@@ -108,6 +112,71 @@ for (const [adapterName, cases] of Object.entries(EXPECTATIONS)) {
     });
   });
 }
+
+describe('node-test nested failure paths', () => {
+  test('two describes with the same leaf name do not collide to one id', () => {
+    // Hand-authored in the exact spec-reporter shape (verified against a real
+    // `node --test` run), not a new captured fixture: the inline block reports
+    // each result twice, and two failures sharing a leaf name need distinct
+    // (name, duration) pairs to disambiguate -- exactly what a real run gives.
+    const stdout = [
+      '✔ adds (0.463275ms)',
+      '▶ group a',
+      '  ✖ inner failure (0.432341ms)',
+      '  ▶ nested deeper',
+      '    ✖ inner failure (0.112052ms)',
+      '  ✖ nested deeper (0.198754ms)',
+      '✖ group a (1.289176ms)',
+      '▶ group b',
+      '  ✖ inner failure (0.113991ms)',
+      '✖ group b (0.19641ms)',
+      'ℹ tests 4',
+      'ℹ suites 3',
+      'ℹ pass 1',
+      'ℹ fail 3',
+      'ℹ cancelled 0',
+      'ℹ skipped 0',
+      'ℹ todo 0',
+      'ℹ duration_ms 40.960716',
+      '',
+      '✖ failing tests:',
+      '',
+      'test at test/math.test.mjs:6:3',
+      '✖ inner failure (0.432341ms)',
+      '',
+      'test at test/math.test.mjs:8:5',
+      '✖ inner failure (0.112052ms)',
+      '',
+      'test at test/math.test.mjs:12:3',
+      '✖ inner failure (0.113991ms)',
+      '',
+    ].join('\n');
+
+    const result = SHIPPED_ADAPTERS['node-test'].parse(stdout, '', 1);
+    assert.deepEqual(result.failedTests.map((t) => t.id), [
+      'test/math.test.mjs::group a > inner failure',
+      'test/math.test.mjs::group a > nested deeper > inner failure',
+      'test/math.test.mjs::group b > inner failure',
+    ]);
+  });
+
+  test('a missing inline correlate falls back to the leaf name rather than guessing', () => {
+    const stdout = [
+      'ℹ tests 1',
+      'ℹ pass 0',
+      'ℹ fail 1',
+      '',
+      '✖ failing tests:',
+      '',
+      'test at test/math.test.mjs:3:1',
+      '✖ orphaned (1ms)',
+      '',
+    ].join('\n');
+
+    const result = SHIPPED_ADAPTERS['node-test'].parse(stdout, '', 1);
+    assert.deepEqual(result.failedTests.map((t) => t.id), ['test/math.test.mjs::orphaned']);
+  });
+});
 
 describe('no cargo adapter ships', () => {
   test('cargo is absent by decision, not by omission', () => {

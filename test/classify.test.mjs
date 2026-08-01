@@ -130,6 +130,37 @@ describe('counted mode', () => {
   });
 });
 
+describe('truncated capture', () => {
+  test('a truncated counted-mode capture is ERROR even though the parsed data looks like a clean KILLED', () => {
+    const result = classify({
+      run: { ...FAIL_RUN, truncated: true },
+      parsed: counted({ passed: 2, failed: 1, ids: ['t.mjs::a'] }),
+      expectFail: ['t.mjs::a'],
+    });
+    assert.equal(result.verdict, Verdict.ERROR);
+    assert.equal(result.reason, Reason.OUTPUT_TRUNCATED);
+  });
+
+  test('a truncated exit-code-mode capture is ERROR too -- no grade is exempt', () => {
+    const result = classify({
+      run: { ...FAIL_RUN, truncated: true },
+      parsed: { grade: 'exit-code', failedTests: [], compileError: false, ran: null },
+      expectFail: ['whatever'],
+    });
+    assert.equal(result.verdict, Verdict.ERROR);
+    assert.equal(result.reason, Reason.OUTPUT_TRUNCATED);
+  });
+
+  test('truncation is checked before timeout has a chance to mask it, but timeout still wins when both are true', () => {
+    const result = classify({
+      run: { ...FAIL_RUN, timedOut: true, truncated: true },
+      parsed: counted({ passed: 0, ran: 0 }),
+      expectFail: ['t.mjs::a'],
+    });
+    assert.equal(result.verdict, Verdict.TIMEOUT);
+  });
+});
+
 describe('exit-code mode', () => {
   const parsed = { grade: 'exit-code', failedTests: [], compileError: false, ran: null };
 
