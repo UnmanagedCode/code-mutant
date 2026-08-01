@@ -169,6 +169,17 @@ describe('empty-diff-vs-base gate (run only)', () => {
       assert.notEqual(report.results.length, 0);
     } finally { repo.cleanup(); }
   });
+
+  test('an unresolvable --base is a structured gate failure, not a process crash', async () => {
+    const repo = repoWithBase('base-unresolvable');
+    try {
+      const report = await run(repo, [MUTANT], {}, { checkBaseDiff: true, base: 'no-such-branch-at-all' });
+      assert.equal(report.gates.baseDiff.outcome, GateOutcome.FAILED);
+      assert.equal(report.gates.baseDiff.code, 'base-unresolvable');
+      assert.deepEqual(report.results, []);
+      assert.equal(exitCodeFor(report), ExitCode.GATE_FAILED);
+    } finally { repo.cleanup(); }
+  });
 });
 
 describe('mutated sha', () => {
