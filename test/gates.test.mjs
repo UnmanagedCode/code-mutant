@@ -150,6 +150,11 @@ describe('canary gate', () => {
     try {
       const statusBefore = repo.status();
       const report = await run(repo, [], { isolation: 'in-place' });
+      assert.deepEqual(
+        report.gates.baseline.failedTests,
+        [],
+        'a green counted-grade baseline has nothing to name -- [] is the accurate reading, not null',
+      );
       assert.equal(report.gates.canary.status, CanaryStatus.KILLED);
       assert.equal(report.gates.canary.grade, 'counted');
       assert.equal(report.gates.canary.target, 'test/guard.test.mjs');
@@ -387,6 +392,12 @@ describe('exit-code grade gates', () => {
     try {
       const report = await run(repo, []);
       assert.equal(report.gates.baseline.outcome, 'passed');
+      assert.equal(
+        report.gates.baseline.failedTests,
+        null,
+        'exit-code grade has no named tests even on a green baseline -- never [], which would '
+          + 'claim nameability the grade never has',
+      );
       assert.equal(report.gates.canary.status, CanaryStatus.NOT_ESTABLISHED);
       // NOT rendered as 'passed': a reader must be able to tell "the gate
       // observed a failure" from "the gate was never asked to prove it could".
