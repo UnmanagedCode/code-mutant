@@ -82,7 +82,14 @@ describe('baseline gate', () => {
     try {
       const report = await run(repo);
       assert.equal(report.gates.baseline.outcome, 'failed');
-      assert.match(report.gates.baseline.detail, /already failing before any mutation/);
+      // The id must appear in the human-readable detail too, not just the
+      // structured field -- `detail` is what report.mjs prints for a human
+      // reader, and it's where the canary gate already names its failures.
+      assert.match(
+        report.gates.baseline.detail,
+        /already failing before any mutation: test\/broken\.test\.mjs::already failing/,
+      );
+      assert.deepEqual(report.gates.baseline.failedTests, ['test/broken.test.mjs::already failing']);
     } finally { repo.cleanup(); }
   });
 
@@ -107,8 +114,30 @@ describe('baseline gate', () => {
       const report = await run(repo);
       assert.equal(report.gates.baseline.outcome, 'failed');
       assert.match(report.gates.baseline.detail, /zero test failures/);
+      assert.equal(
+        report.gates.baseline.failedTests,
+        null,
+        'a FAILED baseline with nothing parsed as failing must not read as [] ("nothing failed")',
+      );
       assert.equal(report.gates.canary, undefined, 'the run must stop before the canary');
       assert.equal(exitCodeFor(report), ExitCode.GATE_FAILED);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a setup-hook failure reports failedTests: null, not undefined', async () => {
+    // The hookFailure branch never sets `failedTests` at all -- report.mjs's
+    // `?? null` coercion is what keeps the on-disk shape [string]|null rather
+    // than leaking `undefined` where the schema promises one of those two.
+    const repo = makeRepo({
+      files: guardFiles(),
+      config: { setup: 'exit 1', isolation: 'copy' },
+      label: 'baseline-hook-failure',
+    });
+    try {
+      const report = await run(repo);
+      assert.equal(report.gates.baseline.outcome, 'failed');
+      assert.match(report.gates.baseline.detail, /setup hook failed/);
+      assert.equal(report.gates.baseline.failedTests, null);
     } finally { repo.cleanup(); }
   });
 });
@@ -144,6 +173,11 @@ describe('canary gate', () => {
     try {
       const statusBefore = repo.status();
       const report = await run(repo, [], { isolation: 'in-place' });
+      assert.deepEqual(
+        report.gates.baseline.failedTests,
+        [],
+        'a green counted-grade baseline has nothing to name -- [] is the accurate reading, not null',
+      );
       assert.equal(report.gates.canary.status, CanaryStatus.KILLED);
       assert.equal(report.gates.canary.grade, 'counted');
       assert.equal(report.gates.canary.target, 'test/guard.test.mjs');
@@ -381,12 +415,31 @@ describe('exit-code grade gates', () => {
     try {
       const report = await run(repo, []);
       assert.equal(report.gates.baseline.outcome, 'passed');
+      assert.equal(
+        report.gates.baseline.failedTests,
+        null,
+        'exit-code grade has no named tests even on a green baseline -- never [], which would '
+          + 'claim nameability the grade never has',
+      );
       assert.equal(report.gates.canary.status, CanaryStatus.NOT_ESTABLISHED);
       // NOT rendered as 'passed': a reader must be able to tell "the gate
       // observed a failure" from "the gate was never asked to prove it could".
       assert.equal(report.gates.canary.outcome, 'not-established');
       assert.match(report.gates.canary.detail, /established.*per-mutant during `run`/);
       assert.equal(exitCodeFor(report), ExitCode.CLEAN);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a failed exit-code baseline has nothing nameable, and says so rather than an empty list', async () => {
+    const repo = exitCodeRepo('exit-baseline-broken', { baselineCommand: 'exit 1' });
+    try {
+      const report = await run(repo, []);
+      assert.equal(report.gates.baseline.outcome, 'failed');
+      assert.equal(
+        report.gates.baseline.failedTests,
+        null,
+        'exit-code grade has no named tests to report -- [] would misread as "nothing failed"',
+      );
     } finally { repo.cleanup(); }
   });
 
