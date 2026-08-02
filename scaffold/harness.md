@@ -33,7 +33,7 @@ Build a project-local mutation-testing harness at `harness/mutation/`, driven by
      `parse(stdout, stderr, exitCode)`. Prove it against the captured output before finishing.
 
    A counted-grade command must exit 0 whenever no test failed: one that chains a lint or guardrail
-   step exiting non-zero on its own fails the baseline gate (`unexplained-exit`), so scope
+   step exiting non-zero on its own fails the baseline gate (`outcome: "failed"`), so scope
    `baselineCommand`/`testCommand` to the test run itself.
 4. **Set `baseBranch`** to the branch this project actually merges into (`main`, `master`, or
    whatever its real integration branch is). Left unset, `run`'s empty-diff-vs-base gate reports

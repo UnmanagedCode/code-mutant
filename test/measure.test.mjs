@@ -31,8 +31,8 @@ describe('a counted command must agree with its own exit code', () => {
   const GREEN_COUNTS = countedResult({ passed: 3, failed: 0, ran: 3, compileError: false });
 
   test('a counted run that exits non-zero with zero parsed failures is not green', () => {
-    // Both halves matter: dropping the exit-code check makes the first assertion
-    // pass, and inverting it makes the second one pass.
+    // Both halves matter: dropping the exit-code check fails the first
+    // assertion, and inverting it fails the second.
     assert.equal(isGreen({ run: { ...RUN, exitCode: 1 }, parsed: GREEN_COUNTS }), false);
     assert.equal(isGreen({ run: RUN, parsed: GREEN_COUNTS }), true);
   });
