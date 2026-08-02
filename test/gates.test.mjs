@@ -82,7 +82,13 @@ describe('baseline gate', () => {
     try {
       const report = await run(repo);
       assert.equal(report.gates.baseline.outcome, 'failed');
-      assert.match(report.gates.baseline.detail, /already failing before any mutation/);
+      // The id must appear in the human-readable detail too, not just the
+      // structured field -- `detail` is what report.mjs prints for a human
+      // reader, and it's where the canary gate already names its failures.
+      assert.match(
+        report.gates.baseline.detail,
+        /already failing before any mutation: test\/broken\.test\.mjs::already failing/,
+      );
       assert.deepEqual(report.gates.baseline.failedTests, ['test/broken.test.mjs::already failing']);
     } finally { repo.cleanup(); }
   });
@@ -115,6 +121,23 @@ describe('baseline gate', () => {
       );
       assert.equal(report.gates.canary, undefined, 'the run must stop before the canary');
       assert.equal(exitCodeFor(report), ExitCode.GATE_FAILED);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a setup-hook failure reports failedTests: null, not undefined', async () => {
+    // The hookFailure branch never sets `failedTests` at all -- report.mjs's
+    // `?? null` coercion is what keeps the on-disk shape [string]|null rather
+    // than leaking `undefined` where the schema promises one of those two.
+    const repo = makeRepo({
+      files: guardFiles(),
+      config: { setup: 'exit 1', isolation: 'copy' },
+      label: 'baseline-hook-failure',
+    });
+    try {
+      const report = await run(repo);
+      assert.equal(report.gates.baseline.outcome, 'failed');
+      assert.match(report.gates.baseline.detail, /setup hook failed/);
+      assert.equal(report.gates.baseline.failedTests, null);
     } finally { repo.cleanup(); }
   });
 });
