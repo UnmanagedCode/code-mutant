@@ -7,13 +7,13 @@ description: Mutation-prove the implementer's test-coverage claims for a pending
 
 You (the reviewer) author and run every mutant — the implementer never mutates its own claims.
 
-## 0. Harness check
+## 0. A refusal stops the review
 
-If this project has no `harness/mutation/config.json`, stop here — don't build one.
-`harness/mutation/` is committed project state; producing it is the implementer's job, not yours
-(your own writes stay in gitignored `.mutation/`). Don't report a clean sweep either. Report to the
-conductor that the harness is missing, pointing it at `code-mutant`'s `scaffold/harness.md` to
-bootstrap one.
+Any refusal — no `harness/mutation/config.json`, a dirty worktree, a failed gate — means stop and
+report it upward to the conductor, never a clean sweep. Don't pass `--allow-dirty` to get past one,
+don't commit the implementer's work to clean the tree, and don't build the harness yourself:
+`harness/mutation/` is committed project state, so every one of those fixes is the implementer's.
+Your own writes stay in gitignored `.mutation/`.
 
 ## 1. Enumerate claims
 
@@ -23,9 +23,12 @@ never accept a claim as proven without mutating it yourself.
 
 ## 2. Gate
 
-Run `baseline` and confirm it's green in the same isolated copy the mutants will run in, then
-confirm the synthesized canary comes back `KILLED`. Either failing means the harness itself is
-untrustworthy for this run — stop and report that, don't interpret any verdict.
+Run `baseline` in the same isolation mode the mutants will run in. The harness is trustworthy for
+this run only when clean-tree and baseline both pass *and* the canary comes back `KILLED`; `run`
+additionally gates on empty-diff-vs-base. A gate reading `not-established` did not run — never read
+it as a pass, and note it doesn't fail the exit code, so exit 0 alone doesn't mean the gates held
+(an `exit-code`-grade harness always reports its canary that way at baseline scope, and
+empty-diff-vs-base reports it whenever the project set no `baseBranch`).
 
 ## 3. Regression first
 
