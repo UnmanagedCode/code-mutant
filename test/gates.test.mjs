@@ -83,6 +83,7 @@ describe('baseline gate', () => {
       const report = await run(repo);
       assert.equal(report.gates.baseline.outcome, 'failed');
       assert.match(report.gates.baseline.detail, /already failing before any mutation/);
+      assert.deepEqual(report.gates.baseline.failedTests, ['test/broken.test.mjs::already failing']);
     } finally { repo.cleanup(); }
   });
 
@@ -107,6 +108,11 @@ describe('baseline gate', () => {
       const report = await run(repo);
       assert.equal(report.gates.baseline.outcome, 'failed');
       assert.match(report.gates.baseline.detail, /zero test failures/);
+      assert.equal(
+        report.gates.baseline.failedTests,
+        null,
+        'a FAILED baseline with nothing parsed as failing must not read as [] ("nothing failed")',
+      );
       assert.equal(report.gates.canary, undefined, 'the run must stop before the canary');
       assert.equal(exitCodeFor(report), ExitCode.GATE_FAILED);
     } finally { repo.cleanup(); }
@@ -387,6 +393,19 @@ describe('exit-code grade gates', () => {
       assert.equal(report.gates.canary.outcome, 'not-established');
       assert.match(report.gates.canary.detail, /established.*per-mutant during `run`/);
       assert.equal(exitCodeFor(report), ExitCode.CLEAN);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a failed exit-code baseline has nothing nameable, and says so rather than an empty list', async () => {
+    const repo = exitCodeRepo('exit-baseline-broken', { baselineCommand: 'exit 1' });
+    try {
+      const report = await run(repo, []);
+      assert.equal(report.gates.baseline.outcome, 'failed');
+      assert.equal(
+        report.gates.baseline.failedTests,
+        null,
+        'exit-code grade has no named tests to report -- [] would misread as "nothing failed"',
+      );
     } finally { repo.cleanup(); }
   });
 

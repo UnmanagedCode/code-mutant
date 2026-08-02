@@ -221,7 +221,9 @@ finding can be pointed at exactly the commit it was found against.
     cleanTree: { outcome: "passed"|"failed", code: "dirty-tree"|null, dirty, allowedDirty, detail },
     baseDiff:  { outcome: "passed"|"failed"|"not-established", code: "empty-diff-vs-base"|"base-unresolvable"|null,
                  base, currentBranch, mergeBase, detail },   // `run` only
-    baseline: { outcome: "passed"|"failed", command, counts: {passed,failed,skipped,ran}|null, exitCode, detail },
+    baseline: { outcome: "passed"|"failed", command, counts: {passed,failed,skipped,ran}|null, exitCode,
+                failedTests: [string]|null, detail },   // null when nothing is nameable (exit-code grade, or a
+                                                         // FAILED baseline with no parsed failure to name); [] only when green
     canary:   { outcome, status: "KILLED"|"FAILED"|"NOT-ESTABLISHED", grade, target, detail }
   },
   results: [ {
