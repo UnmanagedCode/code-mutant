@@ -187,6 +187,9 @@ node mutate.mjs validate                    [--json]
 node mutate.mjs probe --file <path> --anchor <text> --replace <text>
                       --expect-fail <test> [...] [--expect-pass <test> ...]
                       [--copy|--in-place] [--json]
+node mutate.mjs probe --patch-file <path>   --expect-fail <test> [...]
+                      [--expect-pass <test> ...] [--copy|--in-place] [--json]
+node mutate.mjs probe --id <id>             [--copy|--in-place] [--json]
 node mutate.mjs candidates --base <branch>  [--json]
 ```
 
@@ -208,9 +211,11 @@ subcommand is *for*.
   severity contract and per-code table are in
   [`mutants.schema.md`](mutants.schema.md#pre-flight-validation).
 - **`probe`** — an ad-hoc single mutation with no catalog entry, for exploring a mutation before
-  adding it to the catalog. Takes the site inline (`--file`/`--anchor`/`--replace`) plus the
-  expected failing test(s), rather than reading `mutants.json`. The escape hatch: the clean-tree
-  gate is a warning here, not a refusal.
+  adding it to the catalog. Three mutually exclusive forms: an inline anchor swap
+  (`--file`/`--anchor`/`--replace`), a unified diff read from a file (`--patch-file`, the probe form
+  of the catalog's `patch` site, for structural mutations an anchor can't express), or one existing
+  catalog entry re-run as authored (`--id`). The escape hatch: the clean-tree gate is a warning
+  here, not a refusal.
 - **`candidates --base <branch>`** — lists diff hunks (relative to `<branch>`) that no catalog
   mutant currently covers. Lists only; it never mutates anything — the reviewer picks which hunks
   are invariant-bearing and authors mutants for them via `run`/a catalog edit. Needs no harness.

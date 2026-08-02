@@ -60,9 +60,10 @@ read `KILLED`, but it runs no tests, so it establishes no gate and does not stan
 Run narrow by default. Prefer `--copy` — you don't own the shared worktree and shouldn't touch it;
 fall back to `--in-place` only when a mutant's gate genuinely needs a real tree (a server boot, a
 browser gate). A structural mutation with no anchor+replace form (e.g. reordering two migrations)
-uses the `patch` site form instead — that residue stays hand-authored; the runner doesn't invent
-structural edits for you. For exact command syntax, `mutate.mjs --help` or the project's
-`harness/mutation/README.md` is authoritative.
+uses the `patch` site form instead — that residue stays hand-authored, the runner doesn't invent
+structural edits for you, but `probe --patch-file` iterates one without a catalog entry and
+`probe --id` re-runs a single existing entry under probe's relaxed gates. For exact command syntax,
+`mutate.mjs --help` or the project's `harness/mutation/README.md` is authoritative.
 
 ## 7. Interpret
 
