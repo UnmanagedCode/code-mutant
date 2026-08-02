@@ -10,7 +10,9 @@ mutation-prove a "covered" claim before anyone trusts it.
   verdict** — expect an independent baseline re-measurement too, not a reused number, and hold
   every claim to "a test that passes either way proves nothing."
 - **Brief the implementer too** — state each coverage claim precisely (which invariant each test
-  pins), because it will be independently mutated, not re-read.
+  pins), because it will be independently mutated, not re-read. Have it commit its work before
+  review starts, and relay a dirty-worktree refusal back to it rather than waiving the gate — the
+  reviewer can't commit on its behalf.
 - **Arbitrate survivors like any other finding** — a `SURVIVED` verdict is a finding to weigh, not
   an automatic block; relay what's worth fixing, and say so explicitly when something isn't, so the
   reviewer marks it waived — left unwaived, it's re-reported every round.
