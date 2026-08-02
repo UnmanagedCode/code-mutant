@@ -85,6 +85,32 @@ describe('baseline gate', () => {
       assert.match(report.gates.baseline.detail, /already failing before any mutation/);
     } finally { repo.cleanup(); }
   });
+
+  test('a baseline that exits non-zero while reporting no failures is refused', async () => {
+    // The counters alone say green; only the exit code says otherwise. A parser
+    // that cannot see why the command failed is the real-world shape here (a
+    // chained guardrail step, a crash after the summary banner), so the counts
+    // are hard-coded green and `exit 1` supplies the only signal there is.
+    const files = guardFiles();
+    files['harness/mutation/parse.mjs'] = `
+      export function parse() {
+        return { grade: 'counted', passed: 1, failed: 0, skipped: 0, ran: 1,
+                 failedTests: [], compileError: false, counts: {} };
+      }
+    `;
+    const repo = makeRepo({
+      files,
+      config: { baselineCommand: 'exit 1', runner: 'custom', isolation: 'copy' },
+      label: 'baseline-unexplained-exit',
+    });
+    try {
+      const report = await run(repo);
+      assert.equal(report.gates.baseline.outcome, 'failed');
+      assert.match(report.gates.baseline.detail, /zero test failures/);
+      assert.equal(report.gates.canary, undefined, 'the run must stop before the canary');
+      assert.equal(exitCodeFor(report), ExitCode.GATE_FAILED);
+    } finally { repo.cleanup(); }
+  });
 });
 
 describe('canary gate', () => {
@@ -254,6 +280,48 @@ describe('narrow baseline (the delta reference, and a second zero-test guard)', 
       assert.equal(report.gates.canary.target, 'test/guard.test.mjs');
       assert.equal(report.results[0].verdict, Verdict.ERROR);
       assert.equal(report.results[0].reason, Reason.SCOPE_NON_GREEN);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a mutant whose command exits non-zero with no failing test is ERROR, never SURVIVED', async () => {
+    // The false-SURVIVED shape, end to end through the real node-test adapter:
+    // the suite genuinely reports `fail 0`, and something the adapter cannot see
+    // -- here a guardrail step chained onto the command -- exits non-zero anyway.
+    // Read as a survivor, that publishes a false finding against a real claim.
+    const files = guardFiles();
+    files['src/note.mjs'] = "export const NOTE = 'alpha';\n";
+    files['sentinel.mjs'] = "import { readFileSync } from 'node:fs';\n"
+      + "process.exit(readFileSync('src/note.mjs', 'utf8').includes('beta') ? 1 : 0);\n";
+    const repo = makeRepo({ files, config: { isolation: 'copy' }, label: 'unexplained-exit' });
+    try {
+      const report = await run(repo, [{
+        id: 'exits-without-failing',
+        invariant: 'the note constant is load-bearing',
+        // Nothing imports src/note.mjs, so no test observes this edit -- the only
+        // thing that reacts to it is the sentinel, via the exit code.
+        sites: [{ file: 'src/note.mjs', anchor: "'alpha'", replacement: "'beta'" }],
+        expectFail: ['test/guard.test.mjs::allows user-defined backends'],
+        narrowCommand: "node --test 'test/guard.test.mjs' && node sentinel.mjs",
+        whyNotEquivalent: 'changes the exported constant',
+      }]);
+
+      assert.equal(report.gates.baseline.outcome, 'passed');
+      assert.equal(report.gates.canary.status, CanaryStatus.KILLED);
+      const result = report.results[0];
+      assert.notEqual(
+        result.verdict,
+        Verdict.SURVIVED,
+        'a non-zero exit with no failing test must never be published as a survivor',
+      );
+      assert.equal(result.verdict, Verdict.ERROR);
+      assert.equal(result.reason, Reason.UNEXPLAINED_EXIT);
+      assert.equal(result.exitCode, 1);
+      // The narrow baseline proves the sentinel is quiet until the mutation lands,
+      // so the non-zero exit is the mutation's doing and not a broken scope.
+      assert.equal(result.narrowBaseline.green, true);
+      assert.equal(result.mutantCounts.failed, 0);
+      // Not a survivor, but also not a clean proof.
+      assert.equal(exitCodeFor(report), ExitCode.NO_VERDICT);
     } finally { repo.cleanup(); }
   });
 

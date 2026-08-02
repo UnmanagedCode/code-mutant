@@ -115,10 +115,10 @@ since an exit-code kill is not the same precision as a counted kill.
 | Verdict | Meaning |
 |---|---|
 | `KILLED` | Exactly the `expectFail` tests failed, and every `expectPass` test still passed. |
-| `SURVIVED` | The suite stayed green — the finding: the coverage claim is false. |
+| `SURVIVED` | The suite stayed green *and* the command exited 0 — the finding: the coverage claim is false. |
 | `IMPRECISE` | A compile/build break, or failures outside `expectFail` — the mutant itself is invalid (often an equivalent mutant) and needs rewriting smaller, not reporting as a finding. |
 | `TIMEOUT` | The mutation hung the suite — flagged, not counted as a kill. |
-| `ERROR` | No verdict was possible: an anchor is missing or ambiguous (a catalog stale against moved code), the replacement was a no-op, or the narrowed scope was already broken or ran zero tests. |
+| `ERROR` | No verdict was possible: an anchor is missing or ambiguous (a catalog stale against moved code), the replacement was a no-op, the narrowed scope was already broken or ran zero tests, or the command exited non-zero without naming a failing test. |
 
 ### Three trust gates
 

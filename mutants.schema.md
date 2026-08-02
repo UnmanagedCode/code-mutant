@@ -125,8 +125,9 @@ before the run):
 | `overlapping-anchors` | Two sites of one mutant overlap in the source. |
 | `mixed-site-forms` | An anchor site and a patch site of one mutant touch the same file. |
 | `patch-unparseable` / `patch-rejected` | git could not read the patch, or it does not apply. |
-| `scope-non-green` | The narrowed scope was already failing before any mutation. |
+| `scope-non-green` | The narrowed scope was already failing, or exited non-zero, before any mutation. |
 | `scope-empty` | The narrowed scope ran **zero tests**. Never reported as `SURVIVED`. |
+| `unexplained-exit` | Counted mode: the command exited non-zero while naming **no failing test** — something the adapter cannot see went wrong, so the run is not observably green. Never reported as `SURVIVED`. |
 | `canary-not-established` | Exit-code mode: the gate could not be shown to observe a deliberate break in the mutated file, so its "survivor" means nothing. |
 | `timed-out` | The command exceeded `timeoutMs`. |
 | `dirty-tree` | Trust gate, `baseline`/`run` (before baseline and canary): the worktree has uncommitted or untracked-and-not-gitignored changes. `--allow-dirty` overrides it; `probe` only warns. See [The clean-tree gate](#the-clean-tree-gate). |
@@ -282,7 +283,7 @@ It must return:
 | Field | Type | Meaning |
 |---|---|---|
 | `grade` | `"counted"` \| `"exit-code"` | Defaults to `"counted"`. |
-| `passed` / `failed` / `skipped` | number | Counts from this run. |
+| `passed` / `failed` / `skipped` | number | Counts from this run. Reporting zero failures while the command exited non-zero makes the mutant `ERROR` (`unexplained-exit`), never `SURVIVED` — the counters alone are not taken as green. |
 | `ran` | number | Tests the command actually reported, **including skipped**. `0` makes the mutant `ERROR` (`scope-empty`), never `SURVIVED`. |
 | `failedTests` | `[{ file, name, id }]` | `id` is what `expectFail`/`expectPass` are compared against. |
 | `compileError` | boolean | True for a build/module-load break. Yields `IMPRECISE`. Never guess it from an exit code alone. |
