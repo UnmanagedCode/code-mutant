@@ -214,6 +214,25 @@ describe('validate checks expectFail shape against the configured adapter', () =
     } finally { repo.cleanup(); }
   });
 
+  test('the file check covers expectPass refs, not only expectFail', async () => {
+    // GOOD's expectFail names a file that exists, so the only ref that can raise
+    // anything here is the expectPass one -- both halves of the reference list
+    // are narrowed against and both must be checked.
+    const repo = makeRepo({
+      files: guardFiles(),
+      mutants: [{ ...GOOD, expectPass: ['test/gone.test.mjs::something'] }],
+      label: 'validate-badref-expectpass',
+    });
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      const raised = report.mutants[0].issues.filter((i) => i.code === 'ref-file-missing');
+      assert.equal(raised.length, 1, 'expected the expectPass ref to be checked');
+      assert.match(raised[0].detail, /test\/gone\.test\.mjs/);
+      assert.equal(raised[0].severity, 'warning');
+      assert.equal(exitCode, 0);
+    } finally { repo.cleanup(); }
+  });
+
   test('a real ref raises nothing', async () => {
     const repo = makeRepo({ files: guardFiles(), mutants: [GOOD], label: 'validate-goodref' });
     try {
