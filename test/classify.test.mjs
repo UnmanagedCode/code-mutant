@@ -99,6 +99,33 @@ describe('counted mode', () => {
     assert.equal(result.reason, Reason.SCOPE_EMPTY);
   });
 
+  test('ERROR: a non-zero exit with zero reported failures is never SURVIVED', () => {
+    const result = classify({
+      run: FAIL_RUN,
+      parsed: counted({ passed: 3 }),
+      expectFail: ['t.mjs::a'],
+    });
+    assert.notEqual(
+      result.verdict,
+      Verdict.SURVIVED,
+      'the counters look green, but the exit code says the run cannot be read',
+    );
+    assert.equal(result.verdict, Verdict.ERROR);
+    assert.equal(result.reason, Reason.UNEXPLAINED_EXIT);
+  });
+
+  test('a zero-test scope keeps scope-empty even when the command also exited non-zero', () => {
+    // Pins the ordering: the unexplained-exit guard must not shadow the more
+    // specific zero-test diagnosis.
+    const result = classify({
+      run: FAIL_RUN,
+      parsed: counted({ passed: 0, ran: 0 }),
+      expectFail: ['t.mjs::a'],
+    });
+    assert.equal(result.verdict, Verdict.ERROR);
+    assert.equal(result.reason, Reason.SCOPE_EMPTY);
+  });
+
   test('TIMEOUT is never counted as a kill', () => {
     const result = classify({
       run: { ...FAIL_RUN, timedOut: true, durationMs: 60_000 },

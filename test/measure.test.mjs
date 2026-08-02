@@ -26,3 +26,25 @@ describe('truncated captures are never green', () => {
     assert.match(describeNotGreen({ run: { ...RUN, truncated: true }, parsed }), /truncated/);
   });
 });
+
+describe('a counted command must agree with its own exit code', () => {
+  const GREEN_COUNTS = countedResult({ passed: 3, failed: 0, ran: 3, compileError: false });
+
+  test('a counted run that exits non-zero with zero parsed failures is not green', () => {
+    // Both halves matter: dropping the exit-code check makes the first assertion
+    // pass, and inverting it makes the second one pass.
+    assert.equal(isGreen({ run: { ...RUN, exitCode: 1 }, parsed: GREEN_COUNTS }), false);
+    assert.equal(isGreen({ run: RUN, parsed: GREEN_COUNTS }), true);
+  });
+
+  test('describeNotGreen tells an unexplained non-zero exit apart from a zero-test scope', () => {
+    const unexplained = describeNotGreen({ run: { ...RUN, exitCode: 1 }, parsed: GREEN_COUNTS });
+    assert.match(unexplained, /zero test failures/);
+    assert.doesNotMatch(unexplained, /ZERO tests/);
+
+    // Ordering: a zero-test scope is the more specific diagnosis and keeps its
+    // own wording even though the command also exited non-zero.
+    const empty = countedResult({ passed: 0, failed: 0, ran: 0, compileError: false });
+    assert.match(describeNotGreen({ run: { ...RUN, exitCode: 1 }, parsed: empty }), /ran ZERO tests/);
+  });
+});

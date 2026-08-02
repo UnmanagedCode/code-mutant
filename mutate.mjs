@@ -79,14 +79,16 @@ FLAGS
 VERDICTS
   KILLED     Exactly the expectFail tests failed, and every expectPass test
              still passed.
-  SURVIVED   The suite stayed green -- THE FINDING: the coverage claim is false.
+  SURVIVED   The suite stayed green and the command exited 0 -- THE FINDING: the
+             coverage claim is false.
   IMPRECISE  A compile/build break, or failures outside expectFail. The mutant
              itself is invalid (often an equivalent mutant); rewrite it smaller
              rather than reporting it.
   TIMEOUT    The mutation hung the suite. Flagged, never counted as a kill.
   ERROR      No verdict was possible: an anchor is missing or ambiguous, the
-             replacement was a no-op, or the narrowed scope was already broken or
-             ran zero tests.
+             replacement was a no-op, the narrowed scope was already broken or
+             ran zero tests, or the command exited non-zero without naming a
+             failing test.
 
 SIGNAL GRADES
   counted    The adapter parses pass/fail/skip counts and failed test names, so
