@@ -15,9 +15,13 @@
 
 import process from 'node:process';
 
+import { readFileSync } from 'node:fs';
+
 import { AdapterError, loadAdapter } from './lib/adapters/index.mjs';
 import { listCandidates } from './lib/candidates.mjs';
-import { CatalogError, assertMutationDirIgnored, loadCatalog, writeResults } from './lib/catalog.mjs';
+import {
+  CatalogError, assertMutationDirIgnored, loadCatalog, requireCatalog, selectById, writeResults,
+} from './lib/catalog.mjs';
 import { ConfigError, loadConfig } from './lib/config.mjs';
 import { checkCleanTree } from './lib/gates.mjs';
 import { installGuard } from './lib/guard.mjs';
@@ -25,6 +29,7 @@ import { EXIT_CODE_MEANINGS, ExitCode, exitCodeFor, formatReport, toJson } from 
 import { execute } from './lib/runner.mjs';
 import { SnapshotError } from './lib/snapshot.mjs';
 import { SiteError } from './lib/sites.mjs';
+import { formatValidation, toValidateJson, validateCatalog, validateExitCode } from './lib/validate.mjs';
 import { WorkspaceError, findRepoRoot } from './lib/workspace.mjs';
 
 const HELP = `code-mutant -- mutation-verified coverage proving
@@ -33,9 +38,13 @@ USAGE
   node mutate.mjs baseline                    [--copy|--in-place] [--allow-dirty] [--json]
   node mutate.mjs run [--id <id> ...] [--all] [--copy|--in-place] [--jobs N]
                       [--base <branch>] [--allow-dirty] [--json]
+  node mutate.mjs validate                    [--json]
   node mutate.mjs probe --file <path> --anchor <text> --replace <text>
                         --expect-fail <test> [...] [--expect-pass <test> ...]
                         [--copy|--in-place] [--json]
+  node mutate.mjs probe --patch-file <path>   --expect-fail <test> [...]
+                        [--expect-pass <test> ...] [--copy|--in-place] [--json]
+  node mutate.mjs probe --id <id>             [--copy|--in-place] [--json]
   node mutate.mjs candidates --base <branch>  [--json]
 
 COMMANDS
@@ -49,15 +58,24 @@ COMMANDS
                narrow scope unmutated -> apply -> run -> classify -> restore.
                All three gates run first; there is deliberately no way to skip
                them short of --allow-dirty.
+  validate     Resolve every catalog site against the working tree and report
+               what would refuse -- RUNNING NO TESTS, so it returns in about a
+               second. A pre-flight, NOT a gate: it establishes nothing and
+               emits no verdict. See VALIDATE below.
   probe        One ad-hoc mutation, no catalog entry written. For exploring a
                mutation before adding it to the catalog. The clean-tree gate is
                a warning here, not a refusal -- probe is the escape hatch.
+               Three mutually exclusive forms: an inline anchor swap
+               (--file/--anchor/--replace), a unified diff read from a file
+               (--patch-file, the probe form of the catalog's "patch" site), or
+               one existing catalog entry re-run as authored (--id).
   candidates   List diff hunks (merge-base..working tree) that no catalog mutant
                covers. ADVISORY: it lists, you target. Do not author one mutant
                per hunk -- that is an exhaustive sweep, not this practice.
 
 FLAGS
-  --id <id>          Mutant id to run; repeatable. Either this or --all.
+  --id <id>          run: mutant id to run; repeatable, either this or --all.
+                     probe: the single catalog entry to run (exactly one).
   --all              Run every mutant in the catalog.
   --copy             Force copy isolation for this invocation.
   --in-place         Force in-place isolation for this invocation.
@@ -71,6 +89,9 @@ FLAGS
   --file <path>      probe: file to mutate.
   --anchor <text>    probe: exact substring to replace; must match exactly once.
   --replace <text>   probe: replacement text; must differ from the anchor.
+  --patch-file <p>   probe: path to a file holding a unified diff to apply as the
+                     mutation. A PATH, not the diff text -- the catalog's "patch"
+                     field takes the text; this takes the file holding it.
   --expect-fail <t>  probe: test that should fail; repeatable.
   --expect-pass <t>  probe: test that must keep passing; repeatable.
   --json             Emit the machine report on stdout instead of the matrix.
@@ -89,6 +110,19 @@ VERDICTS
              replacement was a no-op, the narrowed scope was already broken or
              ran zero tests, or the command exited non-zero without naming a
              failing test.
+
+VALIDATE
+  Runs no test, so it establishes no trust gate and produces no verdict. Exit 0
+  means "every catalog mutant resolves against this tree" -- never "the gates
+  passed". Two severities, and the split is a contract you may script against:
+    problem  run could not produce a trustworthy verdict for this mutant.
+             Either the runner's own code refuses it -- validate reports that by
+             calling that same code, not by re-deciding it -- or the mutant is
+             structurally incapable of reading KILLED (counted grade with no
+             expectFail). Any problem exits 4, the usual catalog-error code.
+    warning  validate's own advice; run proceeds, something is degraded.
+             NEVER affects the exit code.
+  Per-code table: mutants.schema.md, "Pre-flight validation".
 
 SIGNAL GRADES
   counted    The adapter parses pass/fail/skip counts and failed test names, so
@@ -163,7 +197,7 @@ The catalog format is specified in mutants.schema.md, which also documents the
 const BOOLEAN_FLAGS = new Set(['--all', '--copy', '--in-place', '--json', '--help', '-h', '--allow-dirty']);
 const REPEATABLE_FLAGS = new Set(['--id', '--expect-fail', '--expect-pass']);
 const VALUE_FLAGS = new Set([
-  '--jobs', '--base', '--file', '--anchor', '--replace', ...REPEATABLE_FLAGS,
+  '--jobs', '--base', '--file', '--anchor', '--replace', '--patch-file', ...REPEATABLE_FLAGS,
 ]);
 
 export function parseArgs(argv) {
@@ -263,21 +297,8 @@ async function commandRun(flags, lists, log) {
     throw new Error('run needs either --all or at least one --id (refusing to guess which mutants you meant)');
   }
 
-  const catalog = loadCatalog(repoRoot);
-  if (!catalog.exists) {
-    throw new CatalogError(
-      `no catalog at ${catalog.path}. The catalog is per-review and authored by the reviewer; `
-      + 'see mutants.schema.md for the format.',
-    );
-  }
-
-  let mutants = catalog.mutants;
-  if (ids.length) {
-    const byId = new Map(mutants.map((m) => [m.id, m]));
-    const missing = ids.filter((id) => !byId.has(id));
-    if (missing.length) throw new CatalogError(`no mutant with id ${missing.join(', ')} in ${catalog.path}`);
-    mutants = ids.map((id) => byId.get(id));
-  }
+  const catalog = requireCatalog(repoRoot);
+  const mutants = ids.length ? selectById(catalog, ids) : catalog.mutants;
 
   // Checked BEFORE the run, not after: the guard is a hard stop, and discovering
   // it only once the suite has been run several times would waste the whole run.
@@ -300,26 +321,86 @@ async function commandRun(flags, lists, log) {
   return code;
 }
 
+function readPatchFile(patchPath) {
+  let text;
+  try {
+    text = readFileSync(patchPath, 'utf8');
+  } catch (err) {
+    throw new Error(`--patch-file ${patchPath}: cannot read it (${err.message})`);
+  }
+  if (!text.trim()) throw new Error(`--patch-file ${patchPath} is empty`);
+  return text;
+}
+
+const PROBE_ANCHOR_FLAGS = ['--file', '--anchor', '--replace'];
+
+// probe's three mutually exclusive forms. Refusing an ambiguous combination
+// rather than picking one: the whole point of probe is a fast, unsurprising
+// iteration loop, and silently ignoring half the flags is neither.
+function probeForm(flags, ids) {
+  const anchor = PROBE_ANCHOR_FLAGS.some((f) => flags[f] !== undefined);
+  const patch = flags['--patch-file'] !== undefined;
+  const catalog = ids.length > 0;
+
+  const given = [anchor && 'an inline anchor swap (--file/--anchor/--replace)', patch && '--patch-file', catalog && '--id']
+    .filter(Boolean);
+  if (given.length > 1) {
+    throw new Error(`probe takes exactly one mutation form; got ${given.join(' and ')}`);
+  }
+  if (!given.length) {
+    throw new Error(
+      'probe needs a mutation: --file/--anchor/--replace for an inline anchor swap, --patch-file '
+      + '<path> for a unified diff, or --id <id> for one catalog entry (try --help)',
+    );
+  }
+  if (anchor) {
+    for (const required of PROBE_ANCHOR_FLAGS) {
+      if (flags[required] === undefined) throw new Error(`probe needs ${required}`);
+    }
+    return 'anchor';
+  }
+  return patch ? 'patch' : 'catalog';
+}
+
 async function commandProbe(flags, lists, log) {
   const { config, adapter, repoRoot } = await buildContext(flags, log);
-  for (const required of ['--file', '--anchor', '--replace']) {
-    if (flags[required] === undefined) throw new Error(`probe needs ${required}`);
-  }
+  const ids = lists['--id'] ?? [];
+  const form = probeForm(flags, ids);
+
   const expectFail = lists['--expect-fail'] ?? [];
   const expectPass = lists['--expect-pass'] ?? [];
-  if (!expectFail.length && adapter.grade === 'counted') {
-    throw new Error('probe needs at least one --expect-fail in counted mode (it is what KILLED is measured against)');
-  }
 
-  const mutant = {
-    id: 'probe',
-    invariant: `ad-hoc probe: ${flags['--anchor']} -> ${flags['--replace']}`,
-    whyNotEquivalent: '(probe: not recorded in the catalog)',
-    sites: [{ file: flags['--file'], anchor: flags['--anchor'], replacement: flags['--replace'] }],
-    expectFail,
-    expectPass,
-    narrowTo: 'file',
-  };
+  let mutant;
+  if (form === 'catalog') {
+    if (ids.length > 1) throw new Error(`probe runs exactly one catalog entry; got --id ${ids.join(' --id ')}`);
+    if (expectFail.length || expectPass.length) {
+      throw new Error(
+        'probe --id runs the catalog entry as authored, so it owns its expectFail/expectPass. '
+        + 'Drop --expect-fail/--expect-pass, or edit the entry.',
+      );
+    }
+    // Verbatim, including narrowTo/narrowCommand: "run this entry under probe's
+    // gates" means the entry, not a re-derivation of it.
+    mutant = selectById(requireCatalog(repoRoot), ids)[0];
+  } else {
+    if (!expectFail.length && adapter.grade === 'counted') {
+      throw new Error('probe needs at least one --expect-fail in counted mode (it is what KILLED is measured against)');
+    }
+    const site = form === 'patch'
+      ? { patch: readPatchFile(flags['--patch-file']) }
+      : { file: flags['--file'], anchor: flags['--anchor'], replacement: flags['--replace'] };
+    mutant = {
+      id: 'probe',
+      invariant: form === 'patch'
+        ? `ad-hoc probe: patch from ${flags['--patch-file']}`
+        : `ad-hoc probe: ${flags['--anchor']} -> ${flags['--replace']}`,
+      whyNotEquivalent: '(probe: not recorded in the catalog)',
+      sites: [site],
+      expectFail,
+      expectPass,
+      narrowTo: 'file',
+    };
+  }
 
   assertMutationDirIgnored(repoRoot);
 
@@ -338,6 +419,23 @@ async function commandProbe(flags, lists, log) {
   const code = emit(report, flags);
   if (!flags['--json']) log(`results: ${report.resultsFile}`);
   return code;
+}
+
+async function commandValidate(flags, log) {
+  const { config, adapter, repoRoot } = await buildContext(flags, log);
+  // No workspace is opened and no gate is run: validate resolves against the
+  // working tree exactly as it stands, which is the point -- the anchor that went
+  // stale did so against the implementer's current, uncommitted edits.
+  const report = validateCatalog({
+    repoRoot, config, adapter, catalog: requireCatalog(repoRoot),
+  });
+
+  if (flags['--json']) {
+    process.stdout.write(`${JSON.stringify(toValidateJson(report), null, 2)}\n`);
+  } else {
+    process.stdout.write(`${formatValidation(report)}\n`);
+  }
+  return validateExitCode(report);
 }
 
 async function commandCandidates(flags, log) {
@@ -409,6 +507,7 @@ export async function main(argv) {
     switch (command) {
       case 'baseline': return await commandBaseline(flags, log);
       case 'run': return await commandRun(flags, lists, log);
+      case 'validate': return await commandValidate(flags, log);
       case 'probe': return await commandProbe(flags, lists, log);
       case 'candidates': return await commandCandidates(flags, log);
       default:

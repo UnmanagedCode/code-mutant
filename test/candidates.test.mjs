@@ -6,10 +6,11 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { listCandidates, mergeBase, parseHunks } from '../lib/candidates.mjs';
+import { runCli } from './helpers/cli.mjs';
 import { git, guardFiles, makeRepo } from './helpers/tmp-repo.mjs';
 
 // A repo with a `base` branch, then changes on top of it: two separate hunks in
@@ -157,6 +158,34 @@ describe('advisory framing', () => {
       assert.match(listing.advisory, /it lists, you target/i);
       assert.match(listing.advisory, /Do NOT author one mutant per hunk/);
       assert.match(listing.advisory, /exhaustive sweep/);
+    } finally { repo.cleanup(); }
+  });
+});
+
+describe('an absent catalog is tolerated, unlike run/validate', () => {
+  test('the CLI lists the whole diff with no catalog file at all', async () => {
+    // Round 1 of a review: the reviewer has authored nothing yet, so an empty or
+    // entirely absent catalog is `candidates`' NORMAL state -- it takes the
+    // catalog as coverage context, not as the thing it acts on. `run` and
+    // `validate` require one and refuse without it, which is why this caller
+    // deliberately keeps plain loadCatalog rather than requireCatalog. Nothing
+    // else pins that difference, so collapsing the two would break round 1 here.
+    const repo = repoWithDiff('cand-nocatalog');
+    try {
+      assert.equal(
+        existsSync(path.join(repo.root, '.mutation', 'mutants.json')),
+        false,
+        'the fixture must genuinely have no catalog file, or this test proves nothing',
+      );
+
+      const result = await runCli(['candidates', '--base', 'base', '--json'], { cwd: repo.root });
+      assert.equal(result.exitCode, 0, result.stderr);
+
+      const listing = JSON.parse(result.stdout);
+      assert.equal(listing.catalogMutants, 0);
+      assert.ok(listing.hunkCount > 0, 'the diff really does have hunks to list');
+      assert.equal(listing.uncovered.length, listing.hunkCount, 'with no catalog, every hunk is uncovered');
+      assert.deepEqual(listing.covered, []);
     } finally { repo.cleanup(); }
   });
 });

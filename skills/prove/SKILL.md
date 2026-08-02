@@ -51,16 +51,19 @@ edit that violates the invariant without breaking compilation, plus `whyNotEquiv
 the change is genuinely behavior-changing, not equivalent. For a DI or provider seam, always mutate
 **both directions** — under-firing (a missed wire silently disables the guard) and over-firing (a
 stale entry wedges the operation). Full per-entry format is specified in `code-mutant`'s
-`mutants.schema.md` — the catalog's authoritative schema.
+`mutants.schema.md` — the catalog's authoritative schema. Then run `validate`: it resolves every
+site against the current tree in about a second and flags stale anchors and mutants that can never
+read `KILLED`, but it runs no tests, so it establishes no gate and does not stand in for step 2.
 
 ## 6. Run
 
 Run narrow by default. Prefer `--copy` — you don't own the shared worktree and shouldn't touch it;
 fall back to `--in-place` only when a mutant's gate genuinely needs a real tree (a server boot, a
 browser gate). A structural mutation with no anchor+replace form (e.g. reordering two migrations)
-uses the `patch` site form instead — that residue stays hand-authored; the runner doesn't invent
-structural edits for you. For exact command syntax, `mutate.mjs --help` or the project's
-`harness/mutation/README.md` is authoritative.
+uses the `patch` site form instead — that residue stays hand-authored, the runner doesn't invent
+structural edits for you, but `probe --patch-file` iterates one without a catalog entry and
+`probe --id` re-runs a single existing entry under probe's relaxed gates. For exact command syntax,
+`mutate.mjs --help` or the project's `harness/mutation/README.md` is authoritative.
 
 ## 7. Interpret
 
