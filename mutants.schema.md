@@ -135,6 +135,39 @@ before the run):
 | `base-unresolvable` | Trust gate, `run` only: `baseBranch`/`--base` does not resolve to a real branch or commit. A gate failure, not a process exit — a typo'd branch name must read the same as any other trust-gate failure. |
 | — | Writing under `.mutation/` when it is not gitignored is a **hard stop** (exit 4), not a warning: this run would otherwise leave visible untracked files in a worktree it does not own and cannot commit a fix to. |
 
+## Pre-flight validation
+
+`validate` resolves every catalog site against the working tree and **runs no test**. It exists
+because the runner orders baseline → resolve → canary, so a stale anchor otherwise costs a whole
+baseline to discover, once per stale anchor per iteration.
+
+**It is not a gate.** It measures nothing, so it establishes neither clean-tree, baseline nor canary,
+and it emits no verdict. Exit `0` means *every catalog mutant resolves against this tree* — never
+*the gates passed*. Exit `4` (the ordinary catalog-error code — this adds no new exit code) means at
+least one **problem**.
+
+Two severities, and the split is a contract you may script against:
+
+| Severity | Meaning | Affects exit code |
+|---|---|---|
+| `problem` | `run` could not produce a trustworthy verdict for this mutant. Either the runner's own code refuses it — validate reports that by *calling that same code*, never by re-deciding it — or the mutant is structurally incapable of `KILLED`. | Yes → exit 4 |
+| `warning` | validate's own advice. `run` proceeds; something is degraded. | **Never** |
+
+| Code | Severity | Cause |
+|---|---|---|
+| every code in [Refusals](#refusals) that `resolveSites` raises (`anchor-missing`, `anchor-ambiguous`, `no-op`, `file-missing`, `overlapping-anchors`, `mixed-site-forms`, `patch-unparseable`, `patch-rejected`, `invalid-site`) | problem | Reported verbatim from `resolveSites` — the same call `run` makes. |
+| `no-expect-fail` | problem | Counted grade with no `expectFail`. Such a mutant **can never read `KILLED`**: if the mutation survives it reports an un-arbitrable `SURVIVED` (nothing was claimed to fail, so the survivor block has no test to point at), and if anything catches it, `IMPRECISE`. `probe` already refuses the same shape outright. |
+| `no-narrow-scope` | problem | `planNarrowing` refused — references are present but none yields a scope. |
+| `mutation-dir-not-ignored` | problem | Catalog-level. `.mutation/` is not gitignored, which `run` hard-stops on. |
+| `ref-file-missing` | warning | The adapter's references name files and `scopeOf(ref)` — the exact string narrowing substitutes — is not a path in this tree. |
+| `ref-shape` | warning | The adapter's references do **not** name files (`dotnet`, `exit-code`) but a reference is written `file::name`. |
+| `refs-ignored` | warning | Exit-code grade with `expectFail`/`expectPass` listed; at that grade the verdict is the command's exit status and those entries are never consulted. Scope with `narrowCommand` instead. |
+| `narrow-downgraded` | warning | `narrowTo: "names"` will not take effect; carries the downgrade reason. |
+
+Nothing reaches the `problem` tier on the strength of a reading of the source — only what the runner
+itself refuses, plus `no-expect-fail`, whose verdicts were observed. A false `problem` blocks a
+review over a catalog that would have run fine, which is worse than a missing check.
+
 ## The clean-tree gate
 
 The third trust gate, alongside baseline and canary: mutation must run against committed state, so a
@@ -269,6 +302,34 @@ a mutant runs a narrowed scope, so comparing those two would show the narrowing,
 
 Code 5 exists so a catalog whose mutants all fail to resolve cannot read as "0 survivors, clean".
 
+## The `validate` report
+
+`validate --json` emits a **different shape**, deliberately carrying no `results`, `gates`,
+`verdict` or `survivors` key, so a consumer keyed to the run report above cannot read one as the
+other:
+
+```
+{
+  schemaVersion: 1,
+  command: "validate",
+  ranTests:         false,      // always -- validate executes nothing
+  gatesEstablished: false,      // always -- exit 0 is "the catalog resolves", not "the gates passed"
+  note, catalog,
+  adapter: { name, grade, modulePath },
+  issues:  [ { severity: "problem"|"warning", code, detail } ],   // catalog-level
+  mutants: [ {
+    id, invariant,
+    sites,      // same shape as a run report's `mutation`, or null if resolution failed
+    issues,     // as above, per mutant
+    resolves    // false iff this mutant has a problem
+  } ],
+  summary: { total, resolves, withProblems, problems, warnings },
+  exitCode: 0 | 4
+}
+```
+
+See [Pre-flight validation](#pre-flight-validation) for the per-code severity table.
+
 ---
 
 # Appendix B — the adapter `parse()` contract
@@ -294,7 +355,9 @@ It must return:
 Optional exports, each with a safe default if omitted: `scopeOf(ref)` (default: the file part),
 `substitute({scopes, refs, mode})` (default: space-joined quoted paths), `canNameFilter` (default
 `false`), `testFilePatterns` (default `[]`), `canary(source, {file})` (default: none, which makes the
-canary gate fail loudly rather than pass silently).
+canary gate fail loudly rather than pass silently), `refsNameFiles` (whether a test reference names a
+file in the repo; used only by `validate`'s reference check — default: true when you did **not**
+override `scopeOf`, since you then inherit the file-part derivation, false when you did).
 
 A project parser owns **output parsing and nothing else** — never isolation, restore, or verdict
 semantics. Those must mean the same thing in every project, or the trust gates degrade into

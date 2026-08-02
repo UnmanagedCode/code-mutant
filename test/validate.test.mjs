@@ -1,0 +1,382 @@
+// `validate`: the pre-flight that resolves the catalog and runs NOTHING.
+//
+// Two properties carry the command, and each has a test that fails if it is lost:
+//   - it executes no command (a counter file that must never appear), and
+//   - its output cannot be read as a verdict or as a passed gate.
+// The rest pin the severity contract: which conditions are problems (exit 4) and
+// which are warnings (exit 0, always).
+
+import { test, describe } from 'node:test';
+import assert from 'node:assert/strict';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { runCli } from './helpers/cli.mjs';
+import { git, guardFiles, makeRepo, write } from './helpers/tmp-repo.mjs';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const STAGED = path.join(HERE, 'helpers', 'staged-command.mjs');
+
+const GOOD = {
+  id: 'good',
+  invariant: 'the user-defined-backend branch is load-bearing',
+  whyNotEquivalent: 'denies a backend the guard must admit',
+  sites: [{ file: 'src/guard.mjs', anchor: "return kind === 'user-defined';", replacement: 'return false;' }],
+  expectFail: ['test/guard.test.mjs::allows user-defined backends'],
+};
+
+function validate(repo, args = []) {
+  return runCli(['validate', ...args], { cwd: repo.root });
+}
+
+async function validateJson(repo) {
+  const result = await validate(repo, ['--json']);
+  return { ...result, report: JSON.parse(result.stdout) };
+}
+
+describe('validate runs no tests', () => {
+  test('never invokes the test command, even once', async () => {
+    // The fake command writes a counter file on every invocation. If validate
+    // routed anything through execute()/measure() -- a baseline, a canary, a
+    // narrow baseline -- this file would exist.
+    //
+    // The counter lives in its own temp dir, NOT under the repo: a path the fake
+    // could not write to would make this assertion pass whether or not the command
+    // ran. `baseline` on the same fixture is asserted to create it, which is what
+    // proves the fake really is wired up and this check has teeth.
+    const stateDir = mkdtempSync(path.join(os.tmpdir(), 'code-mutant-test-noexec-'));
+    const state = path.join(stateDir, 'invocations');
+    const config = {
+      baselineCommand: `node ${STAGED}`,
+      testCommand: `node ${STAGED} {tests}`,
+    };
+    const repo = makeRepo({ files: guardFiles(), config, mutants: [GOOD], label: 'validate-noexec' });
+    try {
+      const result = await runCli(['validate'], { cwd: repo.root, env: { CM_FAKE_STATE: state } });
+      assert.equal(result.exitCode, 0, result.stdout + result.stderr);
+      assert.equal(existsSync(state), false, 'validate must not execute the test command at all');
+
+      await runCli(['baseline'], { cwd: repo.root, env: { CM_FAKE_STATE: state } });
+      assert.equal(existsSync(state), true, 'control: the fake command really does record its invocations');
+    } finally {
+      repo.cleanup();
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  test('leaves the worktree byte-identical, including for a patch site it checked', async () => {
+    const patch = `diff --git a/src/guard.mjs b/src/guard.mjs
+--- a/src/guard.mjs
++++ b/src/guard.mjs
+@@ -1,4 +1,4 @@
+ export function isAllowed(kind) {
+   if (kind === 'ollama') return true;
+-  return kind === 'user-defined';
++  return false;
+ }
+`;
+    const repo = makeRepo({
+      files: guardFiles(),
+      mutants: [{ ...GOOD, id: 'p', sites: [{ patch }] }],
+      label: 'validate-notrace',
+    });
+    try {
+      const before = repo.status();
+      const result = await validate(repo);
+      assert.equal(result.exitCode, 0, result.stdout);
+      assert.match(result.stdout, /patch touching src\/guard\.mjs/);
+      assert.equal(repo.status(), before, 'validate resolves with --check only; it must never apply');
+    } finally { repo.cleanup(); }
+  });
+});
+
+describe('validate reports resolution refusals', () => {
+  test('a stale anchor is a problem, and the healthy mutant beside it still resolves', async () => {
+    const repo = makeRepo({
+      files: guardFiles(),
+      mutants: [
+        { ...GOOD, id: 'stale', sites: [{ file: 'src/guard.mjs', anchor: 'THIS TEXT IS GONE', replacement: 'x' }] },
+        GOOD,
+      ],
+      label: 'validate-stale',
+    });
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      assert.equal(exitCode, 4);
+      const byId = Object.fromEntries(report.mutants.map((m) => [m.id, m]));
+      assert.equal(byId.stale.resolves, false);
+      assert.deepEqual(byId.stale.issues.map((i) => i.code), ['anchor-missing']);
+      // The loop must catch per mutant, not abort on the first failure.
+      assert.equal(byId.good.resolves, true, 'a later mutant must still be reported after an earlier one fails');
+      assert.deepEqual(byId.good.issues, []);
+      assert.equal(report.summary.withProblems, 1);
+      assert.equal(report.summary.resolves, 1);
+    } finally { repo.cleanup(); }
+  });
+
+  test('ambiguous anchor and no-op replacement each report their own code', async () => {
+    const repo = makeRepo({
+      files: guardFiles(),
+      mutants: [
+        { ...GOOD, id: 'ambiguous', sites: [{ file: 'src/guard.mjs', anchor: 'kind', replacement: 'k' }] },
+        {
+          ...GOOD,
+          id: 'noop',
+          sites: [{
+            file: 'src/guard.mjs',
+            anchor: "return kind === 'user-defined';",
+            replacement: "return kind === 'user-defined';",
+          }],
+        },
+      ],
+      label: 'validate-codes',
+    });
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      assert.equal(exitCode, 4);
+      const codes = Object.fromEntries(report.mutants.map((m) => [m.id, m.issues.map((i) => i.code)]));
+      assert.deepEqual(codes.ambiguous, ['anchor-ambiguous']);
+      assert.deepEqual(codes.noop, ['no-op']);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a patch that no longer applies is patch-rejected', async () => {
+    const patch = `diff --git a/src/guard.mjs b/src/guard.mjs
+--- a/src/guard.mjs
++++ b/src/guard.mjs
+@@ -1,3 +1,3 @@
+ export function neverWrittenThisWay(kind) {
+-  return 1;
++  return 2;
+ }
+`;
+    const repo = makeRepo({
+      files: guardFiles(),
+      mutants: [{ ...GOOD, id: 'p', sites: [{ patch }] }],
+      label: 'validate-patch-reject',
+    });
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      assert.equal(exitCode, 4);
+      assert.deepEqual(report.mutants[0].issues.map((i) => i.code), ['patch-rejected']);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a .mutation/ that is not gitignored is a catalog-level problem', async () => {
+    const repo = makeRepo({
+      files: guardFiles(), gitignore: '', mutants: [GOOD], label: 'validate-notignored',
+    });
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      assert.equal(exitCode, 4);
+      assert.deepEqual(report.issues.map((i) => i.code), ['mutation-dir-not-ignored']);
+      // Catalog-level, not attributed to a mutant.
+      assert.equal(report.mutants[0].resolves, true);
+    } finally { repo.cleanup(); }
+  });
+});
+
+describe('validate checks expectFail shape against the configured adapter', () => {
+  test('counted grade with no expectFail is a PROBLEM: the mutant can never read KILLED', async () => {
+    // Observed against a real `run`: such a mutant reads SURVIVED when nothing
+    // catches the mutation (a blocking, un-arbitrable finding) and IMPRECISE when
+    // something does -- never KILLED.
+    const repo = makeRepo({
+      files: guardFiles(),
+      mutants: [{ ...GOOD, id: 'nofail', expectFail: undefined, expectPass: ['test/guard.test.mjs::allows ollama'] }],
+      label: 'validate-nofail',
+    });
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      assert.equal(exitCode, 4);
+      const issue = report.mutants[0].issues.find((i) => i.code === 'no-expect-fail');
+      assert.ok(issue, 'expected a no-expect-fail issue');
+      assert.equal(issue.severity, 'problem');
+      assert.equal(report.mutants[0].resolves, false);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a ref naming a file that does not exist is a warning, and does not change the exit code', async () => {
+    const repo = makeRepo({
+      files: guardFiles(),
+      mutants: [{ ...GOOD, expectFail: ['test/typo.test.mjs::allows ollama'] }],
+      label: 'validate-badref',
+    });
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      const issue = report.mutants[0].issues.find((i) => i.code === 'ref-file-missing');
+      assert.ok(issue, 'expected a ref-file-missing issue');
+      assert.equal(issue.severity, 'warning');
+      assert.equal(exitCode, 0, 'a warning must never fail the exit code');
+      assert.equal(report.mutants[0].resolves, true);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a real ref raises nothing', async () => {
+    const repo = makeRepo({ files: guardFiles(), mutants: [GOOD], label: 'validate-goodref' });
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      assert.equal(exitCode, 0);
+      assert.deepEqual(report.mutants[0].issues, []);
+      assert.equal(report.summary.warnings, 0);
+    } finally { repo.cleanup(); }
+  });
+
+  test('dotnet: a file::name ref is flagged, an FQN is not -- and no file check is applied', async () => {
+    // The file-existence check must NOT run for an adapter whose references are
+    // not paths: `proj.UnitTest1.Subtracts` is not a file, and reporting it as
+    // missing would be a false finding on a correct catalog.
+    const repo = makeRepo({
+      files: guardFiles(),
+      config: { runner: 'dotnet', baselineCommand: 'dotnet test', testCommand: 'dotnet test {tests}' },
+      mutants: [
+        { ...GOOD, id: 'fqn', expectFail: ['proj.UnitTest1.Subtracts'] },
+        { ...GOOD, id: 'pathy', expectFail: ['test/guard.test.mjs::allows ollama'] },
+      ],
+      label: 'validate-dotnet',
+    });
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      const byId = Object.fromEntries(report.mutants.map((m) => [m.id, m]));
+      assert.deepEqual(byId.fqn.issues, [], 'an FQN must not be checked for existence on disk');
+      const issue = byId.pathy.issues.find((i) => i.code === 'ref-shape');
+      assert.ok(issue, 'expected a ref-shape issue for a file::name ref under dotnet');
+      assert.equal(issue.severity, 'warning');
+      assert.equal(exitCode, 0);
+    } finally { repo.cleanup(); }
+  });
+
+  test('exit-code grade: listed refs are reported as unused, and the run still exits 0', async () => {
+    const repo = makeRepo({
+      files: guardFiles(),
+      config: { runner: 'exit-code', baselineCommand: 'true', testCommand: 'true' },
+      mutants: [GOOD],
+      label: 'validate-exitcode',
+    });
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      const issue = report.mutants[0].issues.find((i) => i.code === 'refs-ignored');
+      assert.ok(issue, 'expected a refs-ignored issue');
+      assert.equal(issue.severity, 'warning');
+      assert.equal(exitCode, 0);
+    } finally { repo.cleanup(); }
+  });
+
+  test('narrowTo:"names" that will not take effect is a warning carrying the reason', async () => {
+    const repo = makeRepo({
+      files: guardFiles(),
+      // A file-only reference names no individual test, so name-level narrowing
+      // has nothing to filter on and planNarrowing downgrades it.
+      mutants: [{ ...GOOD, narrowTo: 'names', expectFail: ['test/guard.test.mjs'] }],
+      label: 'validate-downgrade',
+    });
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      const issue = report.mutants[0].issues.find((i) => i.code === 'narrow-downgraded');
+      assert.ok(issue, 'expected a narrow-downgraded issue');
+      assert.equal(issue.severity, 'warning');
+      assert.match(issue.detail, /names an individual test/);
+      assert.equal(exitCode, 0);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a mutant with no expectFail AND no expectPass reports one cause, not two', async () => {
+    const repo = makeRepo({
+      files: guardFiles(),
+      mutants: [{ ...GOOD, expectFail: undefined }],
+      label: 'validate-norefs',
+    });
+    try {
+      const { report } = await validateJson(repo);
+      assert.deepEqual(
+        report.mutants[0].issues.map((i) => i.code),
+        ['no-expect-fail'],
+        'planNarrowing throwing for the same reason must not be reported as a second problem',
+      );
+    } finally { repo.cleanup(); }
+  });
+});
+
+describe('validate never reads as a verdict or as a passed gate', () => {
+  test('a clean catalog exits 0 saying the catalog resolves, not that anything passed', async () => {
+    const repo = makeRepo({ files: guardFiles(), mutants: [GOOD], label: 'validate-clean' });
+    try {
+      const result = await validate(repo);
+      assert.equal(result.exitCode, 0);
+      assert.match(result.stdout, /NO TESTS WERE RUN \(ranTests: false\)/);
+      assert.match(result.stdout, /establishes NO trust gate/);
+      assert.match(
+        result.stdout,
+        /exit 0: every catalog mutant resolves against this tree\. No test was run and no trust gate was established\./,
+      );
+      // The verdict and gate-outcome vocabulary must not appear in output that
+      // measured nothing. (The banner names the gates it did NOT establish, which
+      // is the opposite failure and is asserted above.)
+      for (const word of ['KILLED', 'SURVIVED', 'IMPRECISE', 'TIMEOUT', 'PASSED', 'Trust gates']) {
+        assert.equal(result.stdout.includes(word), false, `validate output must not contain ${word}`);
+      }
+    } finally { repo.cleanup(); }
+  });
+
+  test('--json carries ranTests:false and none of the run report keys', async () => {
+    const repo = makeRepo({ files: guardFiles(), mutants: [GOOD], label: 'validate-json' });
+    try {
+      const { report } = await validateJson(repo);
+      assert.equal(report.command, 'validate');
+      assert.equal(report.ranTests, false);
+      assert.equal(report.gatesEstablished, false);
+      assert.equal(report.exitCode, 0);
+      for (const key of ['results', 'gates', 'noTrace', 'mutatedSha']) {
+        assert.equal(key in report, false, `a validate report must not carry a "${key}" key`);
+      }
+      assert.equal('survivors' in report.summary, false);
+      assert.equal(JSON.stringify(report).includes('"verdict"'), false);
+    } finally { repo.cleanup(); }
+  });
+
+  test('an absent catalog refuses rather than reporting an empty clean sweep', async () => {
+    const repo = makeRepo({ files: guardFiles(), label: 'validate-nocatalog' });
+    try {
+      const result = await validate(repo);
+      assert.equal(result.exitCode, 4);
+      assert.match(result.stderr, /no catalog at/);
+    } finally { repo.cleanup(); }
+  });
+});
+
+describe('validate resolves against the working tree, not against HEAD', () => {
+  test('an anchor broken by an uncommitted edit is reported (that is the failure it exists to catch)', async () => {
+    const repo = makeRepo({ files: guardFiles(), mutants: [GOOD], label: 'validate-dirty' });
+    try {
+      assert.equal((await validate(repo)).exitCode, 0);
+      // The implementer edits the code under review; the anchor goes stale.
+      write(repo.root, 'src/guard.mjs', `export function isAllowed(kind) {
+  if (kind === 'ollama') return true;
+  return kind === 'userDefined';
+}
+`);
+      const { exitCode, report } = await validateJson(repo);
+      assert.equal(exitCode, 4);
+      assert.deepEqual(report.mutants[0].issues.map((i) => i.code), ['anchor-missing']);
+      // And it did so without any clean-tree refusal: validate is not a gate.
+      assert.equal(git(repo.root, ['status', '--porcelain']).trim().length > 0, true);
+    } finally { repo.cleanup(); }
+  });
+});
+
+describe('validate does not disturb the catalog contract', () => {
+  test('a catalog that fails schema validation refuses before any resolution', async () => {
+    const repo = makeRepo({ files: guardFiles(), mutants: [GOOD], label: 'validate-badschema' });
+    try {
+      writeFileSync(
+        path.join(repo.root, '.mutation', 'mutants.json'),
+        JSON.stringify({ mutants: [{ id: 'x', invariant: 'line 42', whyNotEquivalent: 'y', sites: [] }] }),
+      );
+      const result = await validate(repo);
+      assert.equal(result.exitCode, 4);
+      assert.match(result.stderr, /must name the invariant in prose/);
+    } finally { repo.cleanup(); }
+  });
+});

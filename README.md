@@ -183,6 +183,7 @@ Stack-agnostic; the test command is always a shell string. Invoked directly, fro
 node mutate.mjs baseline                    [--copy|--in-place] [--allow-dirty] [--json]
 node mutate.mjs run [--id <id> ...] [--all] [--copy|--in-place] [--jobs N]
                     [--base <branch>] [--allow-dirty] [--json]
+node mutate.mjs validate                    [--json]
 node mutate.mjs probe --file <path> --anchor <text> --replace <text>
                       --expect-fail <test> [...] [--expect-pass <test> ...]
                       [--copy|--in-place] [--json]
@@ -199,6 +200,13 @@ subcommand is *for*.
   with `--all`. Per mutant: resolve anchor(s)/patch → refuse an ambiguous or no-op edit → measure
   the narrow scope unmutated → apply in the isolated copy → run the narrowed `testCommand` →
   classify → restore. The only subcommand that runs the empty-diff-vs-base gate.
+- **`validate`** — resolves every catalog site against the working tree and reports what would
+  refuse, **running no tests**, so it returns in about a second instead of costing a baseline per
+  stale anchor. A pre-flight, *not* a gate: it establishes nothing and emits no verdict, and exit 0
+  means "the catalog resolves against this tree", never "the gates passed". Problems (a stale
+  anchor, a mutant that can never read `KILLED`) exit 4; warnings never affect the exit code. The
+  severity contract and per-code table are in
+  [`mutants.schema.md`](mutants.schema.md#pre-flight-validation).
 - **`probe`** — an ad-hoc single mutation with no catalog entry, for exploring a mutation before
   adding it to the catalog. Takes the site inline (`--file`/`--anchor`/`--replace`) plus the
   expected failing test(s), rather than reading `mutants.json`. The escape hatch: the clean-tree

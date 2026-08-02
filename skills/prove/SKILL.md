@@ -51,7 +51,9 @@ edit that violates the invariant without breaking compilation, plus `whyNotEquiv
 the change is genuinely behavior-changing, not equivalent. For a DI or provider seam, always mutate
 **both directions** — under-firing (a missed wire silently disables the guard) and over-firing (a
 stale entry wedges the operation). Full per-entry format is specified in `code-mutant`'s
-`mutants.schema.md` — the catalog's authoritative schema.
+`mutants.schema.md` — the catalog's authoritative schema. Then run `validate`: it resolves every
+site against the current tree in about a second and flags stale anchors and mutants that can never
+read `KILLED`, but it runs no tests, so it establishes no gate and does not stand in for step 2.
 
 ## 6. Run
 
