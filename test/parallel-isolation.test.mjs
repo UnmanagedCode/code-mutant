@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 import { loadAdapter } from '../lib/adapters/index.mjs';
 import { loadConfig } from '../lib/config.mjs';
-import { formatReport } from '../lib/report.mjs';
+import { ExitCode, exitCodeFor, formatReport } from '../lib/report.mjs';
 import { execute } from '../lib/runner.mjs';
 import { makeRepo } from './helpers/tmp-repo.mjs';
 
@@ -93,20 +93,26 @@ function occupancyConfig(isolation, jobs) {
 // Runs the three mutants and returns the report plus the mid-run log. `block`
 // and `release` name the scopes that coordinate the interleave; omit them for a
 // serial run, where nothing would ever release the block.
-async function runThree({ isolation, jobs, block = null, release = null, forceJobs = null }) {
+async function runThree({
+  isolation, jobs, block = null, release = null, forceJobs = null, contaminate = null,
+}) {
   const repo = makeRepo({
     files: threeModuleFiles(), config: occupancyConfig(isolation, jobs), label: `occ-${isolation}`,
   });
   const scratch = mkdtempSync(path.join(os.tmpdir(), 'code-mutant-occ-'));
   const logFile = path.join(scratch, 'occupancy.jsonl');
   const releaseFile = path.join(scratch, 'release');
+  const blockedFile = path.join(scratch, 'blocked');
   const env = {
     CM_OCC_LOG: logFile,
     CM_OCC_SITES: SITES.join(','),
     CM_OCC_MARKER: 'MUTATED_',
     CM_OCC_BLOCK_SCOPE: block ?? '',
+    CM_OCC_BLOCKED: block ? blockedFile : '',
     CM_OCC_RELEASE_SCOPE: release ?? '',
     CM_OCC_RELEASE: block ? releaseFile : '',
+    CM_OCC_CONTAMINATE_SCOPE: contaminate?.scope ?? '',
+    CM_OCC_CONTAMINATE_PATH: contaminate?.path ?? '',
     CM_OCC_DEADLINE_MS: '20000',
   };
   try {
@@ -160,6 +166,16 @@ describe('parallel copy runs never share a workspace', () => {
       isolation: 'copy', jobs: 2, block: SCOPE.a, release: SCOPE.c,
     });
 
+    // The lease was never contended. Named before the assertions below because it
+    // is the CAUSE the ordinal fix addresses: with the item index as the key, the
+    // lease refuses the third mutant, which then never reaches its command -- so
+    // the interleave stalls and every assertion after this one fails as a
+    // consequence. This one says why.
+    assert.deepEqual(
+      report.results.filter((r) => r.reason === 'workspace-occupied').map((r) => r.id),
+      [],
+      'no mutant may find its workspace already occupied -- ordinal selection makes that impossible',
+    );
     assert.deepEqual(
       records.filter((r) => r.phase === 'timeout'),
       [],
@@ -181,11 +197,21 @@ describe('parallel copy runs never share a workspace', () => {
       'no two mutants may occupy the same workspace concurrently',
     );
 
-    // (2) NON-VACUITY. Without this, (1) also passes if the pool silently
-    // serialised and nothing was ever concurrent.
+    // (2) THE FORCING FIRED, asserted directly rather than inferred. mutate-a and
+    // mutate-c are the pair the old `index % length` mapped onto ONE workspace, so
+    // (1) only means anything if those two specifically overlapped. A generic
+    // "something overlapped" is satisfied by ordinary worker-0/worker-1
+    // concurrency between mutate-a and mutate-b, which the bug never touched.
+    //
+    // Guaranteed by the helper's two-way rendezvous, not by timing: mutate-a
+    // announces that it is blocking and only then waits, and mutate-c waits for
+    // that announcement before releasing it. Either ordering of their `enter`
+    // records is therefore fine -- the overlap itself cannot not happen.
     assert.ok(
-      found.some((o) => !o.sameTree),
-      'two mutants must actually have been in flight at once, in different trees -- otherwise (1) proves nothing',
+      found.some((o) => (o.scope === SCOPE.c && o.otherScope === SCOPE.a)
+        || (o.scope === SCOPE.a && o.otherScope === SCOPE.c)),
+      'mutate-a and mutate-c must have been in flight simultaneously -- that is the interleave the '
+      + `bug needed, and without it (1) proves nothing. Overlaps seen: ${JSON.stringify(found)}`,
     );
 
     // (3) NO CROSS-CONTAMINATION, mid-run. The stronger form of (1): even if the
@@ -220,6 +246,62 @@ describe('parallel copy runs never share a workspace', () => {
     for (const result of report.results) {
       assert.equal(result.verdict, 'SURVIVED', `${result.id}: ${result.detail}`);
     }
+  });
+});
+
+describe('residue is detected in ANY copy, not just the primary', () => {
+  // The half a --jobs run hits first, and the shape the field report came from:
+  // the contaminated copy is w1, while the primary copy w0 is spotless. So the
+  // aggregate no-trace answer has to go false via the residue term rather than via
+  // the primary's own answer -- checking only the primary would report the run
+  // clean.
+  //
+  // The interleave puts mutate-c in w1 deterministically: mutate-a blocks in w0, so
+  // worker 1 is the only worker that can free up and take the third item. w1's
+  // ledger therefore holds src/b.mjs (from mutate-b) by the time mutate-c runs
+  // there, and mutate-c's command contaminates exactly that -- a path mutate-c's
+  // own snapshot does not cover, so its restore cannot undo it.
+  test('residue in w1 fails the run, names w1, and exits 3 while the primary is clean', async () => {
+    const { report, records } = await runThree({
+      isolation: 'copy',
+      jobs: 2,
+      block: SCOPE.a,
+      release: SCOPE.c,
+      contaminate: { scope: SCOPE.c, path: 'src/b.mjs' },
+    });
+
+    assert.deepEqual(
+      report.results.filter((r) => r.reason === 'workspace-occupied').map((r) => r.id),
+      [],
+      'the copies must not have been shared -- this test is about residue, not occupancy',
+    );
+    assert.deepEqual(records.filter((r) => r.phase === 'timeout'), [], 'the forced interleave must have completed');
+
+    const byId = Object.fromEntries(report.results.map((r) => [r.id, r]));
+    const cwdOf = (scope) => mutantRuns(records).find((r) => r.scope === scope && r.phase === 'enter').cwd;
+    const contaminatedCopy = cwdOf(SCOPE.c);
+
+    // The interleave really did put mutate-c in a copy that was NOT the primary,
+    // and one that mutate-b had already used. Both are preconditions for the branch
+    // under test; without them this test would be checking the jobs=1 case again.
+    assert.notEqual(contaminatedCopy, report.workspaceRoot, 'mutate-c must have run outside the primary copy');
+    assert.equal(contaminatedCopy, cwdOf(SCOPE.b), 'mutate-c must have reused the copy mutate-b ran in');
+    assert.equal(cwdOf(SCOPE.a), report.workspaceRoot, 'mutate-a holds the primary copy');
+
+    assert.equal(byId['mutate-c'].verdict, 'ERROR', byId['mutate-c'].detail);
+    assert.equal(byId['mutate-c'].reason, 'workspace-residue');
+
+    // THE BRANCH. `primary.ok` is true -- w0 is spotless -- so `ok` can only be
+    // false because a non-primary copy's ledger said so.
+    assert.equal(report.noTrace.ok, false, 'residue in a non-primary copy must still fail the run');
+    assert.equal(report.noTrace.residue.length, 1);
+    assert.equal(report.noTrace.residue[0].path, 'src/b.mjs');
+    assert.equal(
+      report.noTrace.residue[0].workspace,
+      contaminatedCopy,
+      'the residue must name the copy that actually held it, not the primary',
+    );
+    assert.equal(exitCodeFor(report), ExitCode.RESTORE_FAILED);
   });
 });
 

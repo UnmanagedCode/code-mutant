@@ -24,21 +24,37 @@
 //
 // Injected via env vars (the project convention for faking an expensive external
 // command):
+// THE RENDEZVOUS IS TWO-WAY, on purpose. The blocker announces that it is
+// blocking and only then waits; the releaser waits for that announcement before
+// releasing. A one-way block (releaser just writes the file) would leave the
+// overlap depending on which child process starts faster -- if the releaser got
+// all the way through first, the blocker would never block and the test would
+// silently stop forcing anything. Two-way makes "these two runs overlapped" true
+// by construction rather than by timing, with both waits bounded so a broken run
+// fails loudly instead of hanging.
+//
 //   CM_OCC_LOG            JSONL log to append to (required)
 //   CM_OCC_SITES          comma-separated repo-relative source paths to inspect
 //   CM_OCC_MARKER         substring marking a site file as currently mutated
 //   CM_OCC_BLOCK_SCOPE    the {tests} argument whose MUTANT run should block
+//   CM_OCC_BLOCKED        file the blocker creates to announce it is blocking
 //   CM_OCC_RELEASE_SCOPE  the {tests} argument whose MUTANT run releases the block
 //   CM_OCC_RELEASE        the release file both of those coordinate through
-//   CM_OCC_DEADLINE_MS    bound on the block, so a broken run fails loudly
+//   CM_OCC_DEADLINE_MS    bound on either wait, so a broken run fails loudly
 //                         instead of hanging (default 20000)
+//   CM_OCC_CONTAMINATE_SCOPE  the {tests} argument whose MUTANT run writes foreign
+//                         bytes into CM_OCC_CONTAMINATE_PATH and leaves them there,
+//                         standing in for a concurrent mutant's restore-to-a-
+//                         mutated-snapshot. The only case where this fake writes
+//                         into the tree (see TREE SIDE EFFECTS above).
+//   CM_OCC_CONTAMINATE_PATH   repo-relative path to contaminate
 //
 // All coordination is gated on "at least one site file is currently mutated",
 // which is what distinguishes a MUTANT run from the unmutated narrow-baseline
 // runs of the same command in phase A. Without that gate the phase A baselines
 // would block and the run would deadlock.
 
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 const log = process.env.CM_OCC_LOG;
@@ -70,21 +86,43 @@ function sleep(ms) {
 const mutated = mutatedSites();
 record({ phase: 'enter', mutated });
 
+// Bounded wait for a file. Returns false on deadline, so the caller can log a
+// `timeout` record and fail the run loudly rather than hanging the suite.
+function waitForFile(file) {
+  const deadline = Date.now() + Number(process.env.CM_OCC_DEADLINE_MS ?? 20_000);
+  while (!existsSync(file)) {
+    if (Date.now() > deadline) return false;
+    sleep(10);
+  }
+  return true;
+}
+
+function giveUp(what) {
+  record({ phase: 'timeout', mutated, waitingFor: what });
+  process.stderr.write(`occupancy-command: ${scope} never saw ${what}\n`);
+  process.exit(70);
+}
+
 if (mutated.length) {
+  if (scope === process.env.CM_OCC_CONTAMINATE_SCOPE && process.env.CM_OCC_CONTAMINATE_PATH) {
+    writeFileSync(
+      path.resolve(process.cwd(), process.env.CM_OCC_CONTAMINATE_PATH),
+      "export function value() {\n  return 'FOREIGN_RESIDUE';\n}\n",
+    );
+  }
+
   if (scope === process.env.CM_OCC_RELEASE_SCOPE && process.env.CM_OCC_RELEASE) {
+    // Wait until the blocker is demonstrably blocked before releasing it, so the
+    // two runs provably overlap however the processes happen to be scheduled.
+    if (process.env.CM_OCC_BLOCKED && !waitForFile(process.env.CM_OCC_BLOCKED)) {
+      giveUp('the blocked marker');
+    }
     appendFileSync(process.env.CM_OCC_RELEASE, `${process.pid}\n`);
   }
 
   if (scope === process.env.CM_OCC_BLOCK_SCOPE && process.env.CM_OCC_RELEASE) {
-    const deadline = Date.now() + Number(process.env.CM_OCC_DEADLINE_MS ?? 20_000);
-    while (!existsSync(process.env.CM_OCC_RELEASE)) {
-      if (Date.now() > deadline) {
-        record({ phase: 'timeout', mutated });
-        process.stderr.write(`occupancy-command: ${scope} never saw its release file\n`);
-        process.exit(70);
-      }
-      sleep(10);
-    }
+    if (process.env.CM_OCC_BLOCKED) writeFileSync(process.env.CM_OCC_BLOCKED, `${process.pid}\n`);
+    if (!waitForFile(process.env.CM_OCC_RELEASE)) giveUp('its release file');
   }
 }
 
