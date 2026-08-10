@@ -24,7 +24,7 @@ import { fileURLToPath } from 'node:url';
 
 import { loadAdapter } from '../lib/adapters/index.mjs';
 import { loadConfig } from '../lib/config.mjs';
-import { ExitCode, exitCodeFor } from '../lib/report.mjs';
+import { ExitCode, exitCodeFor, formatReport, toJson } from '../lib/report.mjs';
 import { execute } from '../lib/runner.mjs';
 import { makeRepo } from './helpers/tmp-repo.mjs';
 
@@ -201,6 +201,16 @@ describe('foreign mutation bytes in a workspace invalidate the verdicts measured
     // the more urgent instruction, and exit 1 would send a reviewer to relay a
     // finding from a run whose integrity failed.
     assert.equal(exitCodeFor(report), ExitCode.RESTORE_FAILED);
+
+    // Copy mode has no before/after git status, so the renderer must show the
+    // residue instead of splitting a null. Rendering it at all is the assertion:
+    // this path used to be unreachable, and reaching it with `before === null`
+    // would throw where a human most needs the output.
+    const text = formatReport(report);
+    assert.match(text, /NO-TRACE ASSERTION FAILED/);
+    assert.match(text, /mutation bytes left behind/);
+    assert.match(text, /src\/a\.mjs/);
+    assert.equal(toJson(report).noTrace.residue.length, 1, 'the machine report carries it too');
   });
 });
 

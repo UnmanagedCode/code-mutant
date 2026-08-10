@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 import { loadAdapter } from '../lib/adapters/index.mjs';
 import { loadConfig } from '../lib/config.mjs';
+import { formatReport } from '../lib/report.mjs';
 import { execute } from '../lib/runner.mjs';
 import { makeRepo } from './helpers/tmp-repo.mjs';
 
@@ -204,6 +205,15 @@ describe('parallel copy runs never share a workspace', () => {
     assert.ok(![...trees].includes(repoRoot), 'copy mode must never measure in the real tree');
 
     assert.equal(report.jobs, 2);
+
+    // Whoever reads a puzzling verdict reads the report, not the warning that
+    // scrolled past at config load, so the concurrent-suite caveat is repeated
+    // here and names what makes a suite unsafe.
+    const text = formatReport(report);
+    assert.match(text, /your suite ran 2x concurrently/);
+    assert.match(text, /fixed port/);
+    assert.match(text, /preserve" paths are symlinked/);
+
     // The fake reports green unconditionally, so SURVIVED is the expected verdict
     // and says nothing about coverage. What matters is that NONE of them is ERROR:
     // the concurrency guards did not fire on a correctly isolated run.
