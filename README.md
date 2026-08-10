@@ -56,7 +56,7 @@ see [Artifact lifetime](#artifact-lifetime) below). `harness/mutation/config.jso
 | `isolation` | `"in-place"` | `"copy"` or `"in-place"` — see [Isolation modes](#isolation-modes). Overridable per invocation with `--copy`/`--in-place`. |
 | `preserve` | `[]` | Paths to symlink into an isolated copy rather than duplicate (e.g. `node_modules`). |
 | `timeoutMs` | `120000` | Per-*command* wall-clock cap — it applies to every command the runner measures, `setup`/`teardown` included. A hung command classifies as `TIMEOUT`, not counted as a kill. |
-| `jobs` | `1` | Parallelism for `copy`-mode runs; clamped to 1 in `in-place` mode, with a note, since concurrent mutation of one tree is unsafe. |
+| `jobs` | `1` | Concurrent mutants in `copy` mode — each worker owns one copy exclusively for its whole life, asserted per run (`lib/occupancy.mjs`), never merely intended. Clamped to 1 in `in-place` mode, with a note, since concurrent mutation of one tree is unsafe. `jobs > 1` also runs the *project's* suite that many times at once — see the unsafe-suite list under [Isolation modes](#isolation-modes). |
 | `baseBranch` | *unset* | The branch `run`'s empty-diff-vs-base gate compares the working tree against — normally whatever the project merges into. Unset, that gate reports `not-established` and checks nothing (see [Three trust gates](#three-trust-gates)). `--base` overrides it per invocation. |
 | `setup` / `teardown` | *unset* | Optional commands run around every measured command — the escape hatch for a DB reset, a build step, or a service that needs starting, without requiring project-local code. |
 
@@ -89,7 +89,9 @@ is not shipped for a given stack is recorded in
   changes — never a clean clone from HEAD, which would silently test the wrong code). Restore is
   simply discarding the copy. Use for pure in-process unit tests, or when `--jobs` parallelism is
   wanted. This is what the reviewer should prefer, since it never touches the worktree it shares
-  with the implementer.
+  with the implementer. Its no-trace assertion is about the copy's own integrity: no mutation
+  code-mutant applied is still sitting in it. Residue there is measured by every later mutant that
+  runs in the same copy, so it fails the run with exit 3, not a coverage finding.
 - **`in-place`** — the mutant runs against the real tree, for gates that need one (a server boot, a
   build cache, absolute-path dependencies). Restore is a byte-snapshot replay over every path the
   mutant touched — including paths a `patch`-form mutant created or deleted, which are snapshotted
@@ -97,6 +99,15 @@ is not shipped for a given stack is recorded in
   Restore is wired to `exit`/`SIGINT`/`SIGTERM`, so an interrupted run can't leave a mutation behind.
   Restore never uses `git checkout --` or `git apply --reverse` — both would silently destroy any
   uncommitted edits already in the file being mutated.
+
+**`--jobs N` in copy mode runs the project's suite N times concurrently, in N copies.** Each copy is
+its own tree, but a suite is not automatically safe to run against itself. Use `jobs=1` if the suite
+binds a fixed TCP port, writes a fixed temp or data directory, shares a database or an on-disk
+fixture it mutates in place, writes a shared build/package cache, or depends on the checkout's
+absolute path. `preserve` entries are **symlinked** into every copy, so a preserved path is shared
+writable state across all workers *and* the real tree — safe for a read-only `node_modules`, not for
+anything the suite writes. The runner warns whenever `jobs > 1`, and repeats the caveat on the
+report.
 
 ### Narrowing and signal grades
 
@@ -118,7 +129,14 @@ since an exit-code kill is not the same precision as a counted kill.
 | `SURVIVED` | The suite stayed green *and* the command exited 0 — the finding: the coverage claim is false. |
 | `IMPRECISE` | A compile/build break, or failures outside `expectFail` — the mutant itself is invalid (often an equivalent mutant) and needs rewriting smaller, not reporting as a finding. |
 | `TIMEOUT` | The mutation hung the suite — flagged, not counted as a kill. |
-| `ERROR` | No verdict was possible: an anchor is missing or ambiguous (a catalog stale against moved code), the replacement was a no-op, the narrowed scope was already broken or ran zero tests, or the command exited non-zero without naming a failing test. |
+| `ERROR` | No verdict was possible: an anchor is missing or ambiguous (a catalog stale against moved code), the replacement was a no-op, the narrowed scope was already broken or ran zero tests, the command exited non-zero without naming a failing test, or one of the three isolation-integrity checks below failed. |
+
+`Reason.WORKSPACE_OCCUPIED`, `Reason.WORKSPACE_RESIDUE` and `Reason.MUTATION_NOT_INTACT`
+(`lib/classify.mjs`) say the tree a command measured was not the tree the result would claim: two
+mutants in one workspace, foreign mutation bytes left in it, or a mutation that did not survive its
+own measured run. All three are `ERROR` (exit 5), never `SURVIVED` and never a downgraded verdict —
+a race that can fake a survivor can fake a kill just as easily and in silence, so nothing is known
+in either direction. See `lib/occupancy.mjs`.
 
 ### Three trust gates
 

@@ -80,6 +80,11 @@ FLAGS
   --copy             Force copy isolation for this invocation.
   --in-place         Force in-place isolation for this invocation.
   --jobs N           Concurrent mutants (copy mode only; clamped to 1 in-place).
+                     Each worker owns one copy exclusively. N > 1 also runs the
+                     project's suite N times at once, so keep N=1 for a suite
+                     with a fixed port, a fixed temp/data dir, a shared DB or
+                     in-place fixture, a shared write cache, or absolute-path
+                     dependence. "preserve" paths are symlinked, so shared.
   --base <branch>    run: overrides config.json's baseBranch for the
                      empty-diff-vs-base gate. candidates: base branch/commit
                      (required there; no config fallback).
@@ -155,7 +160,8 @@ config.json (harness/mutation/config.json)
   preserve         Paths symlinked into a copy instead of duplicated, e.g.
                    ["node_modules"].
   timeoutMs        Per-command wall-clock cap. Default 120000.
-  jobs             Copy-mode concurrency. Default 1.
+  jobs             Copy-mode concurrency. Default 1. See --jobs above for what
+                   makes a suite unsafe to run concurrently.
   baseBranch       Optional. run's empty-diff-vs-base gate compares against
                    this branch; --base overrides it per invocation. Unset (or
                    equal to the branch HEAD is on) reports NOT-ESTABLISHED

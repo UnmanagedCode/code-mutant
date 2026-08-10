@@ -116,13 +116,32 @@ describe('config', () => {
     } finally { repo.cleanup(); }
   });
 
-  test('jobs is honoured in copy mode', () => {
+  test('jobs is honoured in copy mode, with the concurrent-suite caveat named', () => {
     const repo = makeRepo({
       files: guardFiles(), config: { isolation: 'copy', jobs: 3 }, label: 'jobs-copy',
     });
     try {
       const warnings = [];
       assert.equal(loadConfig({ repoRoot: repo.root, warn: (m) => warnings.push(m) }).jobs, 3);
+      // Not clamped -- copy mode really is safe for the RUNNER (one copy per
+      // worker, asserted). The advisory is about the project's own suite, so it
+      // has to name what makes a suite unsafe or the reader cannot check theirs
+      // against it.
+      assert.equal(warnings.length, 1);
+      assert.match(warnings[0], /3 times CONCURRENTLY/);
+      for (const hazard of [/fixed TCP port/, /fixed temp or data directory/, /shares a database/, /build\/package\s*cache/, /absolute path/, /SYMLINKED/]) {
+        assert.match(warnings[0], hazard, `the advisory must name ${hazard}`);
+      }
+    } finally { repo.cleanup(); }
+  });
+
+  test('jobs=1 in copy mode says nothing -- the caveat is about concurrency only', () => {
+    const repo = makeRepo({
+      files: guardFiles(), config: { isolation: 'copy', jobs: 1 }, label: 'jobs-copy-one',
+    });
+    try {
+      const warnings = [];
+      assert.equal(loadConfig({ repoRoot: repo.root, warn: (m) => warnings.push(m) }).jobs, 1);
       assert.deepEqual(warnings, []);
     } finally { repo.cleanup(); }
   });
