@@ -36,13 +36,13 @@ const HELP = `code-mutant -- mutation-verified coverage proving
 
 USAGE
   node mutate.mjs baseline                    [--copy|--in-place] [--allow-dirty] [--json]
-  node mutate.mjs run [--id <id> ...] [--all] [--copy|--in-place] [--jobs N]
+  node mutate.mjs run [--id <id> ...] [--all] [--learn] [--copy|--in-place] [--jobs N]
                       [--base <branch>] [--allow-dirty] [--json]
   node mutate.mjs validate                    [--json]
   node mutate.mjs probe --file <path> --anchor <text> --replace <text>
-                        --expect-fail <test> [...] [--expect-pass <test> ...]
+                        [--learn] [--expect-fail <test> ...] [--expect-pass <test> ...]
                         [--copy|--in-place] [--json]
-  node mutate.mjs probe --patch-file <path>   --expect-fail <test> [...]
+  node mutate.mjs probe --patch-file <path>   [--learn] [--expect-fail <test> ...]
                         [--expect-pass <test> ...] [--copy|--in-place] [--json]
   node mutate.mjs probe --id <id>             [--copy|--in-place] [--json]
   node mutate.mjs candidates --base <branch>  [--json]
@@ -77,6 +77,12 @@ FLAGS
   --id <id>          run: mutant id to run; repeatable, either this or --all.
                      probe: the single catalog entry to run (exactly one).
   --all              Run every mutant in the catalog.
+  --learn            run/probe only. Suppresses grading: expectFail/expectPass are
+                     read only to pick the narrow scope, and the verdict becomes
+                     LEARNED (or SURVIVED for an empty set) instead of KILLED/
+                     IMPRECISE. Reports the observed failing set to fill
+                     expectFail from, instead of guessing it. run --all --learn
+                     batches this over the whole catalog in one invocation.
   --copy             Force copy isolation for this invocation.
   --in-place         Force in-place isolation for this invocation.
   --jobs N           Concurrent mutants (copy mode only; clamped to 1 in-place).
@@ -115,6 +121,8 @@ VERDICTS
              replacement was a no-op, the narrowed scope was already broken or
              ran zero tests, or the command exited non-zero without naming a
              failing test.
+  LEARNED    --learn only: the observed failing set, reported without grading.
+             Never produced by a graded run.
 
 VALIDATE
   Runs no test, so it establishes no trust gate and produces no verdict. Exit 0
@@ -149,6 +157,8 @@ NARROWING
   then labels it, because its IMPRECISE detection is limited to expectPass.
   In exit-code mode there is no substitution -- the whole gate command runs. A
   per-mutant "narrowCommand" overrides the substituted testCommand entirely.
+  --learn with no expectFail/expectPass at all falls back to baselineCommand
+  (the whole suite) rather than refusing, since discovery has no scope to narrow.
 
 config.json (harness/mutation/config.json)
   baselineCommand  Required. The project's real "run everything" command.
@@ -200,7 +210,7 @@ The catalog format is specified in mutants.schema.md, which also documents the
 --json report shape and the adapter parse() contract.
 `;
 
-const BOOLEAN_FLAGS = new Set(['--all', '--copy', '--in-place', '--json', '--help', '-h', '--allow-dirty']);
+const BOOLEAN_FLAGS = new Set(['--all', '--copy', '--in-place', '--json', '--help', '-h', '--allow-dirty', '--learn']);
 const REPEATABLE_FLAGS = new Set(['--id', '--expect-fail', '--expect-pass']);
 const VALUE_FLAGS = new Set([
   '--jobs', '--base', '--file', '--anchor', '--replace', '--patch-file', ...REPEATABLE_FLAGS,
@@ -250,7 +260,7 @@ function runId() {
   return `${new Date().toISOString().replace(/[:.]/g, '-')}`;
 }
 
-async function buildContext(flags, log, { allowBaseOverride = false } = {}) {
+async function buildContext(flags, log, { allowBaseOverride = false, allowLearn = false } = {}) {
   const repoRoot = findRepoRoot(process.cwd());
   const jobsFlag = flags['--jobs'] === undefined ? undefined : Number(flags['--jobs']);
   if (jobsFlag !== undefined && (!Number.isInteger(jobsFlag) || jobsFlag < 1)) {
@@ -258,6 +268,9 @@ async function buildContext(flags, log, { allowBaseOverride = false } = {}) {
   }
   if (!allowBaseOverride && flags['--base'] !== undefined) {
     throw new Error('--base only applies to `run` (the empty-diff-vs-base gate) and `candidates` (try --help)');
+  }
+  if (!allowLearn && flags['--learn']) {
+    throw new Error('--learn only applies to `run` and `probe` (try --help)');
   }
   const config = loadConfig({
     repoRoot,
@@ -269,6 +282,12 @@ async function buildContext(flags, log, { allowBaseOverride = false } = {}) {
     warn: (message) => log(`note: ${message}`),
   });
   const adapter = await loadAdapter(config.runner, { configDir: config.configDir });
+  if (allowLearn && flags['--learn'] && adapter.grade === 'exit-code') {
+    throw new Error(
+      `--learn needs a counted-grade adapter; the ${adapter.name} adapter is exit-code grade and never `
+      + 'names a failing test, so there is nothing to discover',
+    );
+  }
   return { repoRoot, config, adapter };
 }
 
@@ -297,7 +316,7 @@ async function commandBaseline(flags, log) {
 }
 
 async function commandRun(flags, lists, log) {
-  const { config, adapter, repoRoot } = await buildContext(flags, log, { allowBaseOverride: true });
+  const { config, adapter, repoRoot } = await buildContext(flags, log, { allowBaseOverride: true, allowLearn: true });
   const ids = lists['--id'] ?? [];
   if (!ids.length && !flags['--all']) {
     throw new Error('run needs either --all or at least one --id (refusing to guess which mutants you meant)');
@@ -318,6 +337,7 @@ async function commandRun(flags, lists, log) {
     allowDirty: Boolean(flags['--allow-dirty']),
     checkBaseDiff: true,
     base: config.baseBranch,
+    learn: Boolean(flags['--learn']),
   });
   report.command = 'run';
   report.catalog = catalog.path;
@@ -369,9 +389,10 @@ function probeForm(flags, ids) {
 }
 
 async function commandProbe(flags, lists, log) {
-  const { config, adapter, repoRoot } = await buildContext(flags, log);
+  const { config, adapter, repoRoot } = await buildContext(flags, log, { allowLearn: true });
   const ids = lists['--id'] ?? [];
   const form = probeForm(flags, ids);
+  const learn = Boolean(flags['--learn']);
 
   const expectFail = lists['--expect-fail'] ?? [];
   const expectPass = lists['--expect-pass'] ?? [];
@@ -389,7 +410,7 @@ async function commandProbe(flags, lists, log) {
     // gates" means the entry, not a re-derivation of it.
     mutant = selectById(requireCatalog(repoRoot), ids)[0];
   } else {
-    if (!expectFail.length && adapter.grade === 'counted') {
+    if (!expectFail.length && adapter.grade === 'counted' && !learn) {
       throw new Error('probe needs at least one --expect-fail in counted mode (it is what KILLED is measured against)');
     }
     const site = form === 'patch'
@@ -418,7 +439,7 @@ async function commandProbe(flags, lists, log) {
   }
 
   const report = await execute({
-    config, adapter, mutants: [mutant], log, enforceCleanTree: false,
+    config, adapter, mutants: [mutant], log, enforceCleanTree: false, learn,
   });
   report.command = 'probe';
   report.resultsFile = writeResults(repoRoot, `probe-${runId()}`, toJson(report));

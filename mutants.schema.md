@@ -93,6 +93,10 @@ Matching is on the exact string, after trimming and stripping a leading `./`. A 
 only a file matches only a **file-level** failure (a module that failed to load), never "any failure
 in that file" — treating it as a wildcard would quietly weaken what `KILLED` means.
 
+Under `--learn`, `expectFail`/`expectPass` are read **only** as narrowing scope and are never
+compared against the observed failures — grading is suppressed entirely, so a bogus or stale ref
+never buys a bogus `IMPRECISE`.
+
 ## Narrowing
 
 `{tests}` in `testCommand` is substituted with the smallest scope that **both** (i) includes every
@@ -110,6 +114,9 @@ the report labels it. Use it when the adapter can name-filter and the file holds
 deliberately leaving out; otherwise leave it at the default.
 
 In exit-code mode there is no substitution — the whole gate command runs.
+
+Learn mode only: a mutant with no `expectFail`/`expectPass` at all falls back to `baselineCommand`
+(the whole suite) instead of refusing — discovery has no scope to narrow to.
 
 ## Refusals
 
@@ -156,7 +163,7 @@ Two severities, and the split is a contract you may script against:
 | Code | Severity | Cause |
 |---|---|---|
 | every code in [Refusals](#refusals) that `resolveSites` raises (`anchor-missing`, `anchor-ambiguous`, `no-op`, `file-missing`, `overlapping-anchors`, `mixed-site-forms`, `patch-unparseable`, `patch-rejected`, `invalid-site`) | problem | Reported verbatim from `resolveSites` — the same call `run` makes. |
-| `no-expect-fail` | problem | Counted grade with no `expectFail`. Such a mutant **can never read `KILLED`**: if the mutation survives it reports an un-arbitrable `SURVIVED` (nothing was claimed to fail, so the survivor block has no test to point at), and if anything catches it, `IMPRECISE`. `probe` already refuses the same shape outright. |
+| `no-expect-fail` | problem | Counted grade with no `expectFail`. Such a mutant **can never read `KILLED`**: if the mutation survives it reports an un-arbitrable `SURVIVED` (nothing was claimed to fail, so the survivor block has no test to point at), and if anything catches it, `IMPRECISE`. `probe` already refuses the same shape outright. Run `run --learn` to discover the failing set and fill `expectFail` from it. |
 | `no-narrow-scope` | problem | `planNarrowing` refused — references are present but none yields a scope. |
 | `mutation-dir-not-ignored` | problem | Catalog-level. `.mutation/` is not gitignored, which `run` hard-stops on. |
 | `ref-file-missing` | warning | The adapter's references name files and `scopeOf(ref)` — the exact string narrowing substitutes — is not a path in this tree. |
@@ -248,6 +255,7 @@ finding can be pointed at exactly the commit it was found against.
   jobs:      number,
   workspaceRoot: string,
   adapter:   { name, grade: "counted"|"exit-code", modulePath },
+  learn:         boolean,         // true when --learn suppressed grading for this run
   mutatedSha:    string|null,     // `git rev-parse HEAD` -- points a survivor at a re-runnable commit
   reproducible:  boolean,         // false only when --allow-dirty was used to proceed on a dirty tree
   gates: {
@@ -261,7 +269,7 @@ finding can be pointed at exactly the commit it was found against.
   },
   results: [ {
     id, invariant, whyNotEquivalent, waived,
-    verdict: "KILLED"|"SURVIVED"|"IMPRECISE"|"TIMEOUT"|"ERROR",
+    verdict: "KILLED"|"SURVIVED"|"IMPRECISE"|"TIMEOUT"|"ERROR"|"LEARNED",
     reason,                       // machine-readable refusal/imprecision code, or null
     detail,                       // one human sentence
     grade,                        // WHICH SIGNAL GRADE PRODUCED THIS VERDICT
@@ -280,7 +288,7 @@ finding can be pointed at exactly the commit it was found against.
   } ],
   noTrace: { ok, before, after } | null,
   pathSetMismatches: [ … ],
-  summary: { total, open, waived, survivors, waivedSurvivors, noVerdict, killed, imprecise },
+  summary: { total, open, waived, survivors, waivedSurvivors, noVerdict, killed, imprecise, learned },
   exitCode: number
 }
 ```
@@ -301,6 +309,9 @@ a mutant runs a narrowed scope, so comparing those two would show the narrowing,
 | 5 | No survivors, but some mutant produced **no verdict** (`ERROR`/`TIMEOUT`) — not a clean proof. |
 
 Code 5 exists so a catalog whose mutants all fail to resolve cannot read as "0 survivors, clean".
+
+A learn run's exit 0 means discovery completed, never that coverage was proven — check the report's
+`learn` flag before reading an exit code from a `--learn` invocation as a clean sweep.
 
 ## The `validate` report
 

@@ -16,7 +16,7 @@ import path from 'node:path';
 
 import { ExitCode } from '../lib/report.mjs';
 import { runCli } from './helpers/cli.mjs';
-import { guardFiles, makeRepo, write } from './helpers/tmp-repo.mjs';
+import { git, guardFiles, makeRepo, write } from './helpers/tmp-repo.mjs';
 
 const KILLING_PATCH = `diff --git a/src/guard.mjs b/src/guard.mjs
 --- a/src/guard.mjs
@@ -223,6 +223,95 @@ describe('probe --id runs one catalog entry', () => {
       const result = await runCli(['probe', '--id', 'm1'], { cwd: repo.root });
       assert.equal(result.exitCode, ExitCode.USAGE);
       assert.match(result.stderr, /no catalog at/);
+    } finally { repo.cleanup(); }
+  });
+});
+
+describe('--learn', () => {
+  test('a file-only ref as a scope hint pins refs-as-scope end to end', async () => {
+    const repo = patchRepo('probe-learn-scoped');
+    try {
+      const { exitCode, report } = await probeJson(repo, [
+        '--file', 'src/guard.mjs', '--anchor', "return kind === 'user-defined';", '--replace', 'return false;',
+        '--learn', '--expect-fail', 'test/guard.test.mjs',
+      ]);
+      assert.equal(exitCode, ExitCode.CLEAN);
+      const result = report.results[0];
+      assert.equal(result.verdict, 'LEARNED');
+      assert.deepEqual(result.failedTests, [EXPECT_FAIL]);
+      assert.equal(report.learn, true);
+    } finally { repo.cleanup(); }
+  });
+
+  test('no --expect-fail at all is no longer a refusal, and falls back to baselineCommand', async () => {
+    const repo = patchRepo('probe-learn-noscope');
+    try {
+      const { exitCode, report } = await probeJson(repo, [
+        '--file', 'src/guard.mjs', '--anchor', "return kind === 'user-defined';", '--replace', 'return false;',
+        '--learn',
+      ]);
+      assert.equal(exitCode, ExitCode.CLEAN);
+      const result = report.results[0];
+      assert.equal(result.narrowing.command, 'node --test');
+      assert.equal(result.narrowing.mode, 'whole');
+    } finally { repo.cleanup(); }
+  });
+
+  test('a bogus --expect-fail ref no longer buys a bogus IMPRECISE', async () => {
+    const repo = patchRepo('probe-learn-bogus-ref');
+    try {
+      const { exitCode, report } = await probeJson(repo, [
+        '--file', 'src/guard.mjs', '--anchor', "return kind === 'user-defined';", '--replace', 'return false;',
+        '--learn', '--expect-fail', 'test/guard.test.mjs::rejects unknown',
+      ]);
+      assert.equal(exitCode, ExitCode.CLEAN);
+      const result = report.results[0];
+      assert.equal(result.verdict, 'LEARNED');
+      assert.deepEqual(result.unexpectedFailures, []);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a mutation nothing covers still reports SURVIVED, not folded into LEARNED', async () => {
+    const repo = makeRepo({ files: guardFiles(), label: 'probe-learn-survived' });
+    try {
+      write(repo.root, 'src/guard.mjs', `export function isAllowed(kind) {
+  if (kind === 'ollama') return true;
+  return kind === 'user-defined';
+}
+export const unused = 1;
+`);
+      git(repo.root, ['add', '-A']);
+      git(repo.root, ['commit', '-qm', 'add unused export']);
+
+      const { exitCode, report } = await probeJson(repo, [
+        '--file', 'src/guard.mjs', '--anchor', 'export const unused = 1;', '--replace', 'export const unused = 2;',
+        '--learn',
+      ]);
+      assert.equal(exitCode, ExitCode.SURVIVORS);
+      assert.equal(report.results[0].verdict, 'SURVIVED');
+    } finally { repo.cleanup(); }
+  });
+
+  test('an exit-code-grade adapter refuses --learn outright', async () => {
+    const repo = makeRepo({
+      files: guardFiles(), config: { runner: 'exit-code', baselineCommand: 'node --test', testCommand: 'node --test' }, label: 'probe-learn-exitcode',
+    });
+    try {
+      const result = await runCli(
+        ['probe', '--file', 'src/guard.mjs', '--anchor', "return kind === 'user-defined';", '--replace', 'return false;', '--learn'],
+        { cwd: repo.root },
+      );
+      assert.equal(result.exitCode, ExitCode.USAGE);
+      assert.match(result.stderr, /exit-code grade/);
+    } finally { repo.cleanup(); }
+  });
+
+  test('--learn on baseline is refused', async () => {
+    const repo = patchRepo('probe-learn-on-baseline');
+    try {
+      const result = await runCli(['baseline', '--learn'], { cwd: repo.root });
+      assert.equal(result.exitCode, ExitCode.USAGE);
+      assert.match(result.stderr, /only applies to/);
     } finally { repo.cleanup(); }
   });
 });

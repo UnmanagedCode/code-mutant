@@ -58,6 +58,46 @@ describe('default: file granularity', () => {
   });
 });
 
+describe('learn mode', () => {
+  test('no refs + baselineCommand falls back to the whole suite, not a substitution', () => {
+    const plan = planNarrowing({
+      mutant: mutant({ expectFail: [], expectPass: [] }),
+      adapter: nodeTest,
+      testCommand: TEST_COMMAND,
+      learn: true,
+      baselineCommand: 'node --test',
+    });
+    assert.equal(plan.command, 'node --test');
+    assert.equal(plan.mode, NarrowMode.WHOLE);
+    assert.deepEqual(plan.scopes, []);
+  });
+
+  test('non-learn with no refs still throws even when baselineCommand is supplied', () => {
+    assert.throws(
+      () => planNarrowing({
+        mutant: mutant({ expectFail: [], expectPass: [] }),
+        adapter: nodeTest,
+        testCommand: TEST_COMMAND,
+        learn: false,
+        baselineCommand: 'node --test',
+      }),
+      /cannot narrow without at least one entry/,
+    );
+  });
+
+  test('learn with refs takes the ordinary file-narrowing path, not the fallback', () => {
+    const plan = planNarrowing({
+      mutant: mutant(),
+      adapter: nodeTest,
+      testCommand: TEST_COMMAND,
+      learn: true,
+      baselineCommand: 'node --test',
+    });
+    assert.equal(plan.mode, NarrowMode.FILE);
+    assert.equal(plan.command, "node --test 'test/a.test.mjs'");
+  });
+});
+
 describe('opt-in name narrowing', () => {
   test('narrowTo:"names" filters by name and is flagged for the report', () => {
     const plan = planNarrowing({
