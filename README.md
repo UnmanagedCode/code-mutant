@@ -119,7 +119,10 @@ named tests would make "a failure outside `expectFail`" unobservable by construc
 **exit-code mode** (`runner: "exit-code"` — a gate with no pass/fail/skip counts, like `npx tsc
 --noEmit` or a Playwright snap check) there is no substitution; the whole gate command runs, and a
 per-mutant `narrowCommand` can override it. Every verdict is labeled with which grade produced it,
-since an exit-code kill is not the same precision as a counted kill.
+since an exit-code kill is not the same precision as a counted kill. `--learn` reads
+`expectFail`/`expectPass` as scope hints only, never grades against them, and falls back to
+`baselineCommand` (the whole suite) when a mutant names no ref at all — discovery has no scope to
+narrow to.
 
 ### Verdicts
 
@@ -130,6 +133,7 @@ since an exit-code kill is not the same precision as a counted kill.
 | `IMPRECISE` | A compile/build break, or failures outside `expectFail` — the mutant itself is invalid (often an equivalent mutant) and needs rewriting smaller, not reporting as a finding. |
 | `TIMEOUT` | The mutation hung the suite — flagged, not counted as a kill. |
 | `ERROR` | No verdict was possible: an anchor is missing or ambiguous (a catalog stale against moved code), the replacement was a no-op, the narrowed scope was already broken or ran zero tests, the command exited non-zero without naming a failing test, or one of the three isolation-integrity checks below failed. |
+| `LEARNED` | `--learn` mode only: the observed failing set, reported without grading. Never produced by a graded run. |
 
 `Reason.WORKSPACE_OCCUPIED`, `Reason.WORKSPACE_RESIDUE` and `Reason.MUTATION_NOT_INTACT`
 (`lib/classify.mjs`) say the tree a command measured was not the tree the result would claim: two
@@ -199,13 +203,13 @@ Stack-agnostic; the test command is always a shell string. Invoked directly, fro
 
 ```
 node mutate.mjs baseline                    [--copy|--in-place] [--allow-dirty] [--json]
-node mutate.mjs run [--id <id> ...] [--all] [--copy|--in-place] [--jobs N]
+node mutate.mjs run [--id <id> ...] [--all] [--learn] [--copy|--in-place] [--jobs N]
                     [--base <branch>] [--allow-dirty] [--json]
 node mutate.mjs validate                    [--json]
 node mutate.mjs probe --file <path> --anchor <text> --replace <text>
-                      --expect-fail <test> [...] [--expect-pass <test> ...]
+                      [--learn] [--expect-fail <test> ...] [--expect-pass <test> ...]
                       [--copy|--in-place] [--json]
-node mutate.mjs probe --patch-file <path>   --expect-fail <test> [...]
+node mutate.mjs probe --patch-file <path>   [--learn] [--expect-fail <test> ...]
                       [--expect-pass <test> ...] [--copy|--in-place] [--json]
 node mutate.mjs probe --id <id>             [--copy|--in-place] [--json]
 node mutate.mjs candidates --base <branch>  [--json]
@@ -220,7 +224,9 @@ subcommand is *for*.
 - **`run`** — runs one or more catalog mutants (`.mutation/mutants.json`) by `--id`, or every mutant
   with `--all`. Per mutant: resolve anchor(s)/patch → refuse an ambiguous or no-op edit → measure
   the narrow scope unmutated → apply in the isolated copy → run the narrowed `testCommand` →
-  classify → restore. The only subcommand that runs the empty-diff-vs-base gate.
+  classify → restore. The only subcommand that runs the empty-diff-vs-base gate. `--learn` reports
+  the failing set per mutant without grading, which is how a draft catalog gets its `expectFail`
+  filled in one pass instead of guessing and paying an `IMPRECISE` re-run.
 - **`validate`** — resolves every catalog site against the working tree and reports what would
   refuse, **running no tests**, so it returns in about a second instead of costing a baseline per
   stale anchor. A pre-flight, *not* a gate: it establishes nothing and emits no verdict, and exit 0
@@ -233,7 +239,8 @@ subcommand is *for*.
   (`--file`/`--anchor`/`--replace`), a unified diff read from a file (`--patch-file`, the probe form
   of the catalog's `patch` site, for structural mutations an anchor can't express), or one existing
   catalog entry re-run as authored (`--id`). The escape hatch: the clean-tree gate is a warning
-  here, not a refusal.
+  here, not a refusal. `--learn` reports the failing set for a single ad-hoc mutation without
+  grading, the one-off case `run --learn` batches over a whole catalog.
 - **`candidates --base <branch>`** — lists diff hunks (relative to `<branch>`) that no catalog
   mutant currently covers. Lists only; it never mutates anything — the reviewer picks which hunks
   are invariant-bearing and authors mutants for them via `run`/a catalog edit. Needs no harness.

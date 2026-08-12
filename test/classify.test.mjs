@@ -157,6 +157,92 @@ describe('counted mode', () => {
   });
 });
 
+describe('learn mode', () => {
+  test('observed failures -> LEARNED, failed equals the observed ids, reason null', () => {
+    const result = classify({
+      run: FAIL_RUN,
+      parsed: counted({ passed: 0, failed: 2, ids: ['t.mjs::a', 't.mjs::b'] }),
+      expectFail: [],
+      learn: true,
+    });
+    assert.equal(result.verdict, Verdict.LEARNED);
+    assert.deepEqual(result.failed, ['t.mjs::a', 't.mjs::b']);
+    assert.equal(result.reason, null);
+  });
+
+  test('expectFail refs that do not match the observed failures are scope only, not a claim', () => {
+    const result = classify({
+      run: FAIL_RUN,
+      parsed: counted({ passed: 0, failed: 1, ids: ['t.mjs::unlisted'] }),
+      expectFail: ['t.mjs::a'],
+      learn: true,
+    });
+    assert.equal(result.verdict, Verdict.LEARNED);
+    assert.deepEqual(result.unexpectedFailures, []);
+    assert.deepEqual(result.missingFailures, []);
+  });
+
+  test('an expectPass ref among the failures is LEARNED, not IMPRECISE/expect-pass-broke', () => {
+    const result = classify({
+      run: FAIL_RUN,
+      parsed: counted({ passed: 0, failed: 1, ids: ['t.mjs::b'] }),
+      expectPass: ['t.mjs::b'],
+      learn: true,
+    });
+    assert.equal(result.verdict, Verdict.LEARNED);
+    assert.notEqual(result.reason, Reason.EXPECT_PASS_BROKE);
+  });
+
+  test('nothing failed and exit 0 -> SURVIVED, not LEARNED', () => {
+    const result = classify({
+      run: OK_RUN,
+      parsed: counted({ passed: 3 }),
+      expectFail: [],
+      learn: true,
+    });
+    assert.equal(result.verdict, Verdict.SURVIVED);
+  });
+
+  test('nothing failed and exit non-zero -> ERROR/unexplained-exit, not LEARNED', () => {
+    const result = classify({
+      run: FAIL_RUN,
+      parsed: counted({ passed: 3 }),
+      expectFail: [],
+      learn: true,
+    });
+    assert.equal(result.verdict, Verdict.ERROR);
+    assert.equal(result.reason, Reason.UNEXPLAINED_EXIT);
+  });
+
+  test('a compile break, a timeout, and a truncated capture are unchanged by learn mode', () => {
+    const compile = classify({
+      run: FAIL_RUN,
+      parsed: counted({ passed: 0, failed: 1, compileError: true, ids: ['t.mjs::t.mjs'] }),
+      expectFail: [],
+      learn: true,
+    });
+    assert.equal(compile.verdict, Verdict.IMPRECISE);
+    assert.equal(compile.reason, Reason.COMPILE_ERROR);
+
+    const timeout = classify({
+      run: { ...FAIL_RUN, timedOut: true, durationMs: 60_000 },
+      parsed: counted({ passed: 0, failed: 0, ran: 0 }),
+      expectFail: [],
+      learn: true,
+    });
+    assert.equal(timeout.verdict, Verdict.TIMEOUT);
+
+    const truncated = classify({
+      run: { ...FAIL_RUN, truncated: true },
+      parsed: counted({ passed: 2, failed: 1, ids: ['t.mjs::a'] }),
+      expectFail: [],
+      learn: true,
+    });
+    assert.equal(truncated.verdict, Verdict.ERROR);
+    assert.equal(truncated.reason, Reason.OUTPUT_TRUNCATED);
+  });
+});
+
 describe('truncated capture', () => {
   test('a truncated counted-mode capture is ERROR even though the parsed data looks like a clean KILLED', () => {
     const result = classify({

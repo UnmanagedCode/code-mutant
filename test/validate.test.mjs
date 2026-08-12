@@ -195,6 +195,8 @@ describe('validate checks expectFail shape against the configured adapter', () =
       assert.ok(issue, 'expected a no-expect-fail issue');
       assert.equal(issue.severity, 'problem');
       assert.equal(report.mutants[0].resolves, false);
+      // The dead-end refusal must point at its own way out.
+      assert.match(issue.detail, /run --learn/);
     } finally { repo.cleanup(); }
   });
 
