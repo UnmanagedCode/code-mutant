@@ -36,8 +36,18 @@ const DRAFT_MUTANTS = [
   },
 ];
 
+// baselineCommand deliberately differs from what substituteInto(testCommand, '')
+// trims to ('node --test'): every draft mutant here has expectFail: [], so all
+// three hit the learn no-refs fallback, and a fallback that wrongly re-derived
+// the command from testCommand rather than using baselineCommand verbatim would
+// otherwise produce a byte-identical string -- a survivor the memo test below is
+// written to catch.
+const LEARN_BASELINE_COMMAND = 'node --test test/*.test.mjs';
+
 function draftRepo(label) {
-  return makeRepo({ files: guardFiles(), mutants: DRAFT_MUTANTS, label });
+  return makeRepo({
+    files: guardFiles(), mutants: DRAFT_MUTANTS, config: { baselineCommand: LEARN_BASELINE_COMMAND }, label,
+  });
 }
 
 async function runJson(repo, args) {
@@ -67,8 +77,11 @@ describe('run --all --learn', () => {
   test('all 3 share the baselineCommand scope -- one narrow baseline measurement, not three', async () => {
     const repo = draftRepo('run-learn-memo');
     try {
-      const { stderr } = await runJson(repo, ['--all', '--learn']);
+      const { stderr, report } = await runJson(repo, ['--all', '--learn']);
       assert.match(stderr, /narrow baselines: 1 distinct scope\(s\)/);
+      for (const r of report.results) {
+        assert.equal(r.narrowing.command, LEARN_BASELINE_COMMAND);
+      }
     } finally { repo.cleanup(); }
   });
 

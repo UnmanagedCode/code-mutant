@@ -58,6 +58,15 @@ describe('default: file granularity', () => {
   });
 });
 
+// Deliberately NOT 'node --test': substituteInto(TEST_COMMAND, '') trims
+// 'node --test {tests}' down to that exact string too, so a fallback that wrongly
+// re-derived the command from testCommand would be indistinguishable from a
+// correct one that used baselineCommand -- a real, observed survivor. Using a
+// baselineCommand whose text a testCommand substitution could never produce is
+// what makes `command: baselineCommand` vs `substituteInto(testCommand, '')` a
+// distinguishable mutant.
+const LEARN_BASELINE_COMMAND = 'npm test';
+
 describe('learn mode', () => {
   test('no refs + baselineCommand falls back to the whole suite, not a substitution', () => {
     const plan = planNarrowing({
@@ -65,11 +74,13 @@ describe('learn mode', () => {
       adapter: nodeTest,
       testCommand: TEST_COMMAND,
       learn: true,
-      baselineCommand: 'node --test',
+      baselineCommand: LEARN_BASELINE_COMMAND,
     });
-    assert.equal(plan.command, 'node --test');
+    assert.equal(plan.command, LEARN_BASELINE_COMMAND);
     assert.equal(plan.mode, NarrowMode.WHOLE);
     assert.deepEqual(plan.scopes, []);
+    // The mutant this pins flips this to true along with the command string.
+    assert.equal(plan.placeholder, false);
   });
 
   test('non-learn with no refs still throws even when baselineCommand is supplied', () => {
@@ -79,7 +90,7 @@ describe('learn mode', () => {
         adapter: nodeTest,
         testCommand: TEST_COMMAND,
         learn: false,
-        baselineCommand: 'node --test',
+        baselineCommand: LEARN_BASELINE_COMMAND,
       }),
       /cannot narrow without at least one entry/,
     );
@@ -91,7 +102,7 @@ describe('learn mode', () => {
       adapter: nodeTest,
       testCommand: TEST_COMMAND,
       learn: true,
-      baselineCommand: 'node --test',
+      baselineCommand: LEARN_BASELINE_COMMAND,
     });
     assert.equal(plan.mode, NarrowMode.FILE);
     assert.equal(plan.command, "node --test 'test/a.test.mjs'");

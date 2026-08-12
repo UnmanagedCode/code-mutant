@@ -244,7 +244,12 @@ describe('--learn', () => {
   });
 
   test('no --expect-fail at all is no longer a refusal, and falls back to baselineCommand', async () => {
-    const repo = patchRepo('probe-learn-noscope');
+    // baselineCommand deliberately differs from what substituteInto(testCommand, '')
+    // would trim to ('node --test'), so a fallback that wrongly re-derived the
+    // command from testCommand instead of using baselineCommand verbatim produces a
+    // DIFFERENT string here and fails this assertion, rather than being masked by a
+    // coincidence where both happen to trim to the same text.
+    const repo = patchRepo('probe-learn-noscope', { baselineCommand: 'node --test test/*.test.mjs' });
     try {
       const { exitCode, report } = await probeJson(repo, [
         '--file', 'src/guard.mjs', '--anchor', "return kind === 'user-defined';", '--replace', 'return false;',
@@ -252,8 +257,9 @@ describe('--learn', () => {
       ]);
       assert.equal(exitCode, ExitCode.CLEAN);
       const result = report.results[0];
-      assert.equal(result.narrowing.command, 'node --test');
+      assert.equal(result.narrowing.command, 'node --test test/*.test.mjs');
       assert.equal(result.narrowing.mode, 'whole');
+      assert.equal(result.narrowing.placeholder, false);
     } finally { repo.cleanup(); }
   });
 
