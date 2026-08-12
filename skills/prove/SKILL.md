@@ -13,7 +13,9 @@ Any refusal — no `harness/mutation/config.json`, a dirty worktree, a failed ga
 report it upward to the conductor, never a clean sweep. Don't pass `--allow-dirty` to get past one,
 don't commit the implementer's work to clean the tree, and don't build the harness yourself:
 `harness/mutation/` is committed project state, so every one of those fixes is the implementer's.
-Your own writes stay in gitignored `.mutation/`.
+Your own writes stay in gitignored `.mutation/` — except the mutation itself: under `in-place`
+isolation it is applied to the worktree you share with the implementer and byte-restored after
+every mutant. A read-only brief doesn't stop you here.
 
 ## 1. Enumerate claims
 
@@ -23,9 +25,12 @@ never accept a claim as proven without mutating it yourself.
 
 ## 2. Gate
 
-Run `baseline` in the same isolation mode the mutants will run in. The harness is trustworthy for
-this run only when clean-tree and baseline both pass *and* the canary comes back `KILLED`; `run`
-additionally gates on empty-diff-vs-base. A gate reading `not-established` did not run — never read
+Run `baseline` in the isolation mode `config.json` sets, and every mutant in that same mode — pass
+no `--copy`/`--in-place` of your own unless the project's `harness/mutation/README.md` directs it,
+since a mode the project didn't configure can fail its baseline gate outright. The harness is
+trustworthy for this run only when clean-tree and baseline both pass *and* the canary comes back
+`KILLED`; `run` additionally gates on empty-diff-vs-base. A gate reading `not-established` did not
+run — never read
 it as a pass, and note it doesn't fail the exit code, so exit 0 alone doesn't mean the gates held
 (an `exit-code`-grade harness always reports its canary that way at baseline scope, and
 empty-diff-vs-base reports it whenever the project set no `baseBranch`).
@@ -60,13 +65,11 @@ read `KILLED`, but it runs no tests, so it establishes no gate and does not stan
 
 ## 6. Run
 
-Run narrow by default. Prefer `--copy` — you don't own the shared worktree and shouldn't touch it;
-fall back to `--in-place` only when a mutant's gate genuinely needs a real tree (a server boot, a
-browser gate). A structural mutation with no anchor+replace form (e.g. reordering two migrations)
-uses the `patch` site form instead — that residue stays hand-authored, the runner doesn't invent
-structural edits for you, but `probe --patch-file` iterates one without a catalog entry and
-`probe --id` re-runs a single existing entry under probe's relaxed gates. For exact command syntax,
-`mutate.mjs --help` or the project's `harness/mutation/README.md` is authoritative.
+Run narrow by default. A structural mutation with no anchor+replace form (e.g. reordering two
+migrations) uses the `patch` site form instead — that residue stays hand-authored, the runner
+doesn't invent structural edits for you, but `probe --patch-file` iterates one without a catalog
+entry and `probe --id` re-runs a single existing entry under probe's relaxed gates. For exact
+command syntax, `mutate.mjs --help` or the project's `harness/mutation/README.md` is authoritative.
 
 ## 7. Interpret
 

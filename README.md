@@ -40,8 +40,9 @@ Reviewer-facing, invoked inside the review→refine loop (never by the implement
 implementer's coverage claims, clears all three trust gates, re-runs the review's existing mutant
 catalog for regressions, lists un-covered diff hunks via `candidates` (it
 lists, the reviewer targets — no exhaustive one-per-hunk sweep), authors one minimal mutant per
-claim/candidate, runs narrow with `--copy` preferred, and reports survivors as findings the
-conductor can arbitrate without reading project code. Full flow: `skills/prove/SKILL.md`.
+claim/candidate, runs narrow in the project's configured isolation mode, and reports
+survivors as findings the conductor can arbitrate without reading project code. Full flow:
+`skills/prove/SKILL.md`.
 
 ## The mutation harness — `harness/mutation/`
 
@@ -88,9 +89,11 @@ is not shipped for a given stack is recorded in
 - **`copy`** — the mutant runs against a scratch copy of the tree (including any uncommitted
   changes — never a clean clone from HEAD, which would silently test the wrong code). Restore is
   simply discarding the copy. Use for pure in-process unit tests, or when `--jobs` parallelism is
-  wanted. This is what the reviewer should prefer, since it never touches the worktree it shares
-  with the implementer. Its no-trace assertion is about the copy's own integrity: no mutation
-  code-mutant applied is still sitting in it. Residue there is measured by every later mutant that
+  wanted. **A copy is not a git repository** — `copyTree` excludes top-level `.git`
+  (`lib/workspace.mjs`), for a worktree and an ordinary clone alike, so a suite that shells out to
+  git inside the tree fails here and takes the baseline gate with it. Its no-trace assertion is
+  about the copy's own integrity: no mutation code-mutant applied is still sitting in it. Residue
+  there is measured by every later mutant that
   runs in the same copy, so it fails the run with exit 3, not a coverage finding.
 - **`in-place`** — the mutant runs against the real tree, for gates that need one (a server boot, a
   build cache, absolute-path dependencies). Restore is a byte-snapshot replay over every path the
@@ -106,8 +109,11 @@ binds a fixed TCP port, writes a fixed temp or data directory, shares a database
 fixture it mutates in place, writes a shared build/package cache, or depends on the checkout's
 absolute path. `preserve` entries are **symlinked** into every copy, so a preserved path is shared
 writable state across all workers *and* the real tree — safe for a read-only `node_modules`, not for
-anything the suite writes. The runner warns whenever `jobs > 1`, and repeats the caveat on the
-report.
+anything the suite writes. The CLI warns whenever `jobs > 1`, and repeats the caveat on the
+report. The runner's own copy-per-worker isolation is reconciled in the field — 13 runs over a
+10-mutant catalog at `jobs` 1/2/4, zero verdict disagreements across 130 observations (code-kanban,
+2026-08-12) — so a `--jobs N` verdict a serial re-run contradicts is a hazard from the list above
+before it is a runner bug.
 
 ### Narrowing and signal grades
 
@@ -245,8 +251,8 @@ subcommand is *for*.
   mutant currently covers. Lists only; it never mutates anything — the reviewer picks which hunks
   are invariant-bearing and authors mutants for them via `run`/a catalog edit. Needs no harness.
 
-**Shared flags:** `--copy` / `--in-place` override `config.json`'s `isolation` for one invocation —
-the reviewer should default to `--copy`, since it doesn't own the shared worktree. `--json` puts the
+**Shared flags:** `--copy` / `--in-place` override `config.json`'s `isolation` for one invocation.
+`--json` puts the
 machine report on stdout instead of the printed matrix; either way `run` and `probe` always write
 the same object to `.mutation/results/<runId>.json`, and refuse outright if `.mutation/` isn't
 gitignored. Exit code is non-zero whenever any un-waived mutant survived — a signal a conductor can
