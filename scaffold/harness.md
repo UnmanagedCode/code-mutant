@@ -15,9 +15,11 @@ Build a project-local mutation-testing harness at `harness/mutation/`, driven by
 2. **Pick `isolation`** from this project's real gates — and only fall back to a default when
    they're genuinely ambiguous:
    - `"in-place"` — a mutant's command boots a server, needs a build cache, or depends on absolute
-     paths (e.g. a Playwright/browser gate, Next.js, anything with real filesystem state). Also the
-     fallback when the project's gates don't clearly call for either mode.
-   - `"copy"` — pure in-process unit tests, or when `--jobs` parallelism is wanted.
+     paths (e.g. a Playwright/browser gate, Next.js, anything with real filesystem state), or shells
+     out to git inside the tree (a copy has no `.git`). Also the fallback when the project's gates
+     don't clearly call for either mode.
+   - `"copy"` — pure in-process unit tests, or when `--jobs` parallelism is wanted; it is the only
+     mode where `jobs > 1` does anything (in-place clamps it to 1).
 3. **Pick `runner`** by actually running the project's test command once and capturing its real
    stdout/stderr. If the command emits no pass/fail/skip counts at all — a gate like
    `npx tsc --noEmit` or `npm run snap` — pick `runner: "exit-code"`, never a `custom` parser for
@@ -41,7 +43,9 @@ Build a project-local mutation-testing harness at `harness/mutation/`, driven by
    as a clean sweep.
 5. Write `harness/mutation/README.md` documenting how to invoke the harness for *this* project.
    Command syntax and flags are `mutate.mjs`'s own CLI, so read it directly (`--help` or its
-   source) rather than copying examples from another project's harness, which can drift.
+   source) rather than copying examples from another project's harness, which can drift. Call
+   nothing in it verified unless you ran it in this project — name the command and what it
+   produced, or don't make the claim.
 6. Add `.mutation/` to this project's `.gitignore` (per the workspace git-hygiene convention —
    verify the pattern actually matches via `git status` before the first commit that touches it).
 

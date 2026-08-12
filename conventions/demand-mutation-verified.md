@@ -5,7 +5,8 @@ mutation-prove a "covered" claim before anyone trusts it.
 
 - **Mutation-prove, don't trust the report** — brief the reviewer to run `/code-mutant:prove`
   against the implementer's coverage claims; the implementer is the wrong owner for target
-  selection.
+  selection. Brief it write-and-restore, not read-only — the mutant is applied to the tree and
+  byte-restored after each measurement.
 - **Trust the runner's non-zero exit for un-waived survivors over the reviewer's self-reported
   verdict** — expect an independent baseline re-measurement too, not a reused number, and hold
   every claim to "a test that passes either way proves nothing."
