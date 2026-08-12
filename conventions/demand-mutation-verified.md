@@ -17,6 +17,8 @@ mutation-prove a "covered" claim before anyone trusts it.
 - **Arbitrate survivors like any other finding** — a `SURVIVED` verdict is a finding to weigh, not
   an automatic block; relay what's worth fixing, and say so explicitly when something isn't, so the
   reviewer marks it waived — left unwaived, it's re-reported every round.
+- **Relay survivors as invariants, never as mutants to re-run.** A finding is relayed as an invariant that needs a test; handing the implementer the mutants to re-run puts the gate under the party whose verdict can't be independent anyway.
+- **Keep non-vacuous test verification with the implementer, mutation artifacts with the reviewer** — brief the implementer to confirm each new test fails against the unfixed behaviour and to state which test pins which invariant, and never to author, run, or touch `.mutation/`.
 - **Handle the no-harness case** — brief a bootstrap worker from `code-mutant`'s
   `scaffold/harness.md`, or proceed the review without mutation proof; a missing harness is a gap
   to fill or knowingly skip, not a blocking error.
