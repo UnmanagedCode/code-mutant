@@ -123,14 +123,17 @@ VERDICTS
   IMPRECISE  A compile/build break, or failures outside expectFail. The mutant
              itself is invalid (often an equivalent mutant); rewrite it smaller
              rather than reporting it.
-  TIMEOUT    A measured command was killed at its deadline. Flagged, never
-             counted as a kill. hang.blame says which side to fix:
-             "mutation" (rewrite it smaller) or "suite" (the UNMUTATED scope
-             did not terminate -- a project defect, not a mutant problem).
+  TIMEOUT    The MUTANT RUN was killed at its deadline. Flagged, never counted
+             as a kill. The same scope completed unmutated moments earlier, so
+             the mutation hung it -- rewrite it smaller. (hang.blame is always
+             "mutation" here.) A hung UNMUTATED scope is an ERROR, not this.
   ERROR      No verdict was possible: an anchor is missing or ambiguous, the
              replacement was a no-op, the narrowed scope was already broken or
-             ran zero tests, or the command exited non-zero without naming a
-             failing test.
+             ran zero tests, the narrowed scope was killed at its deadline
+             before any mutation was applied (scope-timed-out, hang.blame
+             "suite" -- report that project defect upward; rewriting or
+             dropping the mutant cannot fix it), or the command exited non-zero
+             without naming a failing test.
   LEARNED    --learn only: the observed failing set, reported without grading.
              Never produced by a graded run.
 
