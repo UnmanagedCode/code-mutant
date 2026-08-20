@@ -347,14 +347,24 @@ ceiling. `results[].deadlineMs` is what the command actually got.
 The derivation itself and the `hang` config key live in the README's config table and in
 `mutate.mjs --help`, the two homes every config key has in this project; not restated here.
 
-`hang` is non-null **only** when a command was killed at its deadline, and `blame` is sound without
-any extra run:
+`hang` is non-null **only** when a command was killed at its deadline. It annotates *which side* the
+kill is attributable to; the **verdict and `reason` stay the thing you act on**. These are the only
+reachable combinations:
 
-- **`mutation`** — the mutant run was killed. Reaching it required the *same command* to have been
-  measured unmutated and green, so the only thing that changed is the mutation. Verdict `TIMEOUT`.
-- **`suite`** — the **narrow baseline itself** was killed, before any mutation was applied. Verdict
-  `ERROR` with reason `scope-timed-out` (never `TIMEOUT`: a mutation that was never measured cannot
-  be blamed), and `referenceMs` is `null` because a narrow baseline has none.
+| Verdict | `reason` | `hang.blame` | Reading, and what to do |
+|---|---|---|---|
+| `TIMEOUT` | `timed-out` | `mutation` | The **mutant run** was killed. Reaching it required the *same command* to have been measured unmutated and green, so the only thing that changed is the mutation — rewrite it smaller. |
+| `ERROR` | `scope-timed-out` | `suite` | The **narrow baseline** was killed, before any mutation was applied. A project defect: report it upward, and do **not** rewrite or drop the mutant — that cannot fix it. `referenceMs` is `null`, because a narrow baseline has no reference of its own. |
+| `ERROR` | `setup-hook-failed` / `teardown-hook-failed` | `mutation` | A hook failed on a run that had also timed out — the setup hook itself, or the mutant command ahead of a failing teardown. The **hook** is what to fix; `hang` is incidental here, and `deadlineMs` names the mutant's derived deadline even though a hook runs at `timeoutMs`. |
+
+Two consequences worth stating outright, because both have been written down wrongly before:
+
+- **`blame: "suite"` never appears on `TIMEOUT`.** A mutation that was never measured cannot be
+  blamed, so a hung *unmutated* scope is `ERROR`/`scope-timed-out`. Guidance for `suite` filed under
+  `TIMEOUT` is guidance on an unreachable combination.
+- **`TIMEOUT` always carries `blame: "mutation"`, but the converse does not hold** — row three is a
+  `blame: "mutation"` that is not a `TIMEOUT`. Key routing on the verdict and `reason`, not on
+  `blame` alone.
 
 `gates.baseline.timedOut` is the same signal one level up, for a hang at the gate.
 

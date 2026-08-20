@@ -82,11 +82,12 @@ command syntax, `mutate.mjs --help` or the project's `harness/mutation/README.md
   smaller and re-run; don't report it as a finding. When more than one needs re-authoring, fix them
   all and re-run **once**: a re-run re-pays the gates (~91% of a rework round), so N separate
   re-runs pay that N times.
-- `TIMEOUT` → read `hang.blame`. `mutation` means the same scope completed unmutated, so the
-  mutation hung it — rewrite it smaller. `suite` means the *unmutated* scope did not terminate:
-  report the suite defect upward and do **not** rewrite the mutant, which cannot fix it.
+- `TIMEOUT` → the mutation hung the scope: the same scope completed unmutated moments earlier, so
+  rewrite the mutant smaller. A hung *unmutated* scope arrives as `ERROR` instead — next bullet.
 - `ERROR` → a harness or catalog problem (stale anchor, unusable scope) — fix or drop the mutant,
-  not a coverage finding either. Never read one as a survivor: `graded: false` and
+  not a coverage finding either. **One exception:** `reason: scope-timed-out` means the *unmutated*
+  scope did not terminate — report that project defect upward and do **not** rewrite or drop the
+  mutant, which cannot fix it. Never read any `ERROR` as a survivor: `graded: false` and
   `failedTests: null` mark it (`mutants.schema.md#the-shape-of-an-ungraded-result`).
 
 ## 8. Report
