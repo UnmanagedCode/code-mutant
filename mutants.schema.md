@@ -329,7 +329,7 @@ sums.
 | `timings.narrowBaselinesMs` | Sum of `narrowBaselines[].durationMs` — one measured command per *distinct* scope, so N mutants at one scope cost one entry. |
 | `timings.mutantsMs` | Sum of `results[].durationMs`. A **sum of per-mutant wall clocks**, so under `jobs > 1` it legitimately exceeds `totalMs`. |
 | `results[].applyMs` / `measureMs` / `restoreMs` | The harness's own snapshot+apply and restore cost, versus the project's command. Disjoint slices of that result's `durationMs`; `null` for a phase that never ran (an `ERROR` that stopped before Phase B). The remainder, when there is one, is the per-mutant exit-code canary — its own cost is on `results[].canary.durationMs`. |
-| `gates.canary.attempts[].durationMs` | Each entry is a **whole `baselineCommand` run** against a candidate that did not fire. Up to 5 candidates are tried, so a project whose early candidates sit outside its `baselineCommand`'s scope pays that multiple before the gate establishes anything. |
+| `gates.canary.attempts[].durationMs` | One entry per candidate that did not establish the gate. An entry whose command **ran** is a whole `baselineCommand` run; an entry the adapter **declined** (its `canary()` returned `null` for that file) ran nothing and carries `durationMs: 0`. Up to 5 candidates are *measured* — declines are not charged to that budget, though the walk still stops after 50 of them — so a project whose early candidates sit outside its `baselineCommand`'s scope pays up to 5× before the gate establishes anything. |
 
 ## Deadlines and hang blame
 
@@ -528,8 +528,10 @@ for any target file, so the gate can never be established in any repo state. Eve
 `run`, `probe` — refuses such a harness pre-flight, before the baseline command and, in copy mode,
 before any tree copy, with a `FAILED` canary gate and exit `2`; `validate` reports it as the
 `adapter-no-canary` problem. It must return `{ content, testId, matches(failure) }`, or `null` to
-decline **that file**, which is legal: the next candidate is tried (up to 5, as above), each decline
-recorded as an attempt, and the gate fails only when no candidate establishes it.
+decline **that file**, which is legal: the next candidate is tried, each decline recorded as an
+attempt carrying `durationMs: 0` (a decline runs no command, so it is not charged to the 5-measured-
+candidate budget; the walk stops after 50 declines), and the gate fails only when no candidate
+establishes it.
 
 Other optional exports, each with a safe default if omitted: `scopeOf(ref)` (default: the file part),
 `substitute({scopes, refs, mode})` (default: space-joined quoted paths), `canNameFilter` (default

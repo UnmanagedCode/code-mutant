@@ -33,8 +33,9 @@ Build a project-local mutation-testing harness at `harness/mutation/`, driven by
    - Nothing matches — write the `custom` parser. That is the intended path, not a last resort:
      `harness/mutation/parse.mjs` (that exact filename, beside `config.json`) exporting
      `parse(stdout, stderr, exitCode)` — **plus `canary(source, {file})`, which is required**:
-     without it no canary can be synthesised for any file, and every command (`baseline` included)
-     refuses the harness pre-flight at exit 2, before it measures anything. Declare
+     without it no canary can be synthesised for any file, and `baseline`, `run` and `probe` all
+     refuse the harness pre-flight at exit 2, before measuring anything (`validate` reports it as a
+     problem instead, exit 4). Declare
      `testFilePatterns` too, or `mutate.mjs baseline` on its own cannot discover a canary target
      (`run` borrows the mutants' own scopes instead). Full export contract: `code-mutant`'s
      `mutants.schema.md` Appendix B. Prove it against the captured output before finishing.
@@ -47,12 +48,15 @@ Build a project-local mutation-testing harness at `harness/mutation/`, driven by
    `not-established` and checks nothing, so a review of a branch with no committed work would read
    as a clean sweep.
 5. **Scope `baselineCommand` across the project's test files, not one subdirectory.** The canary
-   gate injects a guaranteed-failing test into a candidate file: the scopes the run's own mutants
-   already narrow to first, then tracked files matching the adapter's `testFilePatterns` in sorted
-   order. A bare `baseline` has no mutants, so it has only the patterns to go on; and if the first
-   few candidates sit outside `baselineCommand`'s scope it burns a baseline run per attempt and then
-   fails the gate. A repo whose alphabetically-first
-   test files live outside the suite you'd normally run is the case to watch.
+   gate injects a guaranteed-failing test into a candidate file, in this order: the target a previous
+   run journalled, then the scopes this run's own mutants narrow to, then tracked files matching the
+   adapter's `testFilePatterns` in sorted order. If the first few candidates sit outside
+   `baselineCommand`'s scope it burns a baseline run per attempt and then fails the gate, so a repo
+   whose alphabetically-first test files live outside the suite you'd normally run is the case to
+   watch. A bare `baseline` has no mutants to borrow scopes from, so on a repo with no journal yet it
+   has only the patterns to go on — which is why a `baseline` can fail the canary gate on a harness
+   whose `run` establishes it, and why the same `baseline` passes afterwards (the journalled target
+   carries over).
 6. Write `harness/mutation/README.md` documenting how to invoke the harness for *this* project.
    Command syntax and flags are `mutate.mjs`'s own CLI, so read it directly (`--help` or its
    source) rather than copying examples from another project's harness, which can drift. Call

@@ -403,6 +403,68 @@ describe('custom adapter canary prerequisites', () => {
     } finally { repo.cleanup(); }
   });
 
+  test('more declines than the attempt cap still reach the candidate that fires', async () => {
+    // The 5-attempt cap bounds BASELINE COMMAND RUNS -- that is its stated
+    // rationale -- so declines, which run nothing, must not spend it. Six declined
+    // candidates sort ahead of the one that fires here, so a cap that counted
+    // candidates would fail the gate on a harness that works.
+    const files = guardFiles();
+    const declined = ['a', 'b', 'c', 'd', 'e', 'f'].map((n) => `test/${n}.test.mjs`);
+    for (const file of declined) {
+      files[file] = `import { test } from 'node:test';\ntest('${file}', () => {});\n`;
+    }
+    const repo = makeRepo({ files, config: { runner: 'custom', isolation: 'copy' }, label: 'custom-many-declines' });
+    write(repo.root, 'harness/mutation/parse.mjs', `
+      import { canary as nodeTestCanary } from ${JSON.stringify(NODE_TEST_MODULE)};
+      export { parse } from ${JSON.stringify(NODE_TEST_MODULE)};
+      export const testFilePatterns = ['test/**/*.test.mjs'];
+      export function canary(source, { file }) {
+        if (file === 'test/guard.test.mjs') return nodeTestCanary(source, { file });
+        return null;
+      }
+    `);
+    try {
+      const report = await run(repo, [], {}, { allowDirty: true });
+      assert.equal(report.gates.canary.status, CanaryStatus.KILLED);
+      assert.equal(report.gates.canary.target, 'test/guard.test.mjs');
+      assert.deepEqual(
+        report.gates.canary.attempts.map((a) => a.target),
+        declined,
+        'every decline is recorded, and none of them costs a measured run',
+      );
+      assert.equal(exitCodeFor(report), ExitCode.CLEAN);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a FAILED gate names where a command actually ran, never a declined candidate', async () => {
+    // The report renders `target` as "via <file>", which must not point at a file
+    // nothing was ever injected into. Sorted order puts the decline LAST here, so
+    // reporting the final attempt would name it.
+    const files = guardFiles();
+    files['test/zzz.test.mjs'] = "import { test } from 'node:test';\ntest('z', () => {});\n";
+    const repo = makeRepo({ files, config: { runner: 'custom', isolation: 'copy' }, label: 'custom-decline-last' });
+    write(repo.root, 'harness/mutation/parse.mjs', `
+      export { parse } from ${JSON.stringify(NODE_TEST_MODULE)};
+      export const testFilePatterns = ['test/**/*.test.mjs'];
+      export function canary(source, { file }) {
+        if (file === 'test/zzz.test.mjs') return null;
+        // Injects nothing, so the command runs and reports no failures: a real
+        // attempt that does not establish the gate.
+        return { content: source, testId: 'never-fires', matches: () => false };
+      }
+    `);
+    try {
+      const report = await run(repo, [], {}, { allowDirty: true });
+      const { canary } = report.gates;
+      assert.equal(canary.status, CanaryStatus.FAILED);
+      assert.equal(canary.attempts.at(-1).target, 'test/zzz.test.mjs', 'the decline is the last attempt');
+      assert.equal(canary.attempts.at(-1).durationMs, 0);
+      assert.equal(canary.target, 'test/guard.test.mjs', 'the last MEASURED candidate, not the decline');
+      assert.match(canary.detail, /1 candidate\(s\) were declined/);
+      assert.equal(exitCodeFor(report), ExitCode.GATE_FAILED);
+    } finally { repo.cleanup(); }
+  });
+
   test('the gate diagnoses a canary-less or grade-less adapter instead of throwing', async () => {
     // The gate's own guard, reached only by a DIRECT caller -- execute() refuses
     // both shapes earlier. Measured before it was keyed on `grade !== exit-code`:
@@ -412,7 +474,15 @@ describe('custom adapter canary prerequisites', () => {
     try {
       const config = loadConfig({ repoRoot: repo.root });
       const base = await loadAdapter('node-test', { configDir: config.configDir });
-      for (const grade of ['counted', undefined, 'Counted']) {
+      const cases = [
+        // The record's grade is the adapter's own, so it can never claim 'counted'
+        // beside a detail naming a different grade -- and a malformed grade is
+        // NAMED, because it is the actual bug and "counted grade" would hide it.
+        { grade: 'counted', recorded: 'counted', names: /runs at counted grade/ },
+        { grade: undefined, recorded: null, names: /no declared grade/ },
+        { grade: 'Counted', recorded: 'Counted', names: /grade "Counted", which is not a grade the runner knows/ },
+      ];
+      for (const { grade, recorded, names } of cases) {
         const gate = await runCanaryGate({
           config,
           adapter: { ...base, name: 'hand-built', grade, canary: null },
@@ -422,6 +492,8 @@ describe('custom adapter canary prerequisites', () => {
         });
         assert.equal(gate.status, CanaryStatus.FAILED, `grade ${JSON.stringify(grade)} must be diagnosed`);
         assert.match(gate.detail, /does not export canary/);
+        assert.match(gate.detail, names);
+        assert.equal(gate.grade, recorded);
         assert.deepEqual(gate.attempts, []);
       }
     } finally { repo.cleanup(); }

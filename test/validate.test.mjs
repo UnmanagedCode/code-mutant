@@ -13,6 +13,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { loadAdapter } from '../lib/adapters/index.mjs';
+import { discoverCanaryTargets, trackedFiles } from '../lib/gates.mjs';
+import { validateCatalog } from '../lib/validate.mjs';
 import { runCli } from './helpers/cli.mjs';
 import { git, guardFiles, makeRepo, write } from './helpers/tmp-repo.mjs';
 
@@ -446,6 +449,45 @@ describe('validate reports the adapter-level canary prerequisites', () => {
       assert.ok(!codes.includes('adapter-no-canary'), codes.join(', '));
       assert.ok(!codes.includes('adapter-no-test-patterns'), codes.join(', '));
     } finally { repo.cleanup(); }
+  });
+
+  test('a git failure is not reported as "your patterns match nothing"', async () => {
+    // `trackedFiles` swallows a git failure -- ENOBUFS on a monorepo past
+    // execFileSync's buffer, or no repo at all -- and returns no candidates. The
+    // gate tolerates that; validate must not turn it into a specific false claim
+    // about the adapter's patterns. A directory that is not a git repo stands in
+    // for the failure, deterministically and with no network or size fixture.
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'code-mutant-test-nogit-'));
+    try {
+      assert.equal(trackedFiles(dir), null, 'a git failure must be distinguishable from an empty repo');
+      const withPatterns = await loadAdapter('node-test', { configDir: dir });
+      assert.ok(withPatterns.testFilePatterns.length, 'fixture assumption: node-test declares patterns');
+      assert.deepEqual(
+        discoverCanaryTargets({ workspaceRoot: dir, repoRoot: dir, adapter: withPatterns }),
+        [],
+        'the gate stays tolerant of a git failure',
+      );
+
+      const report = validateCatalog({
+        repoRoot: dir,
+        config: { testCommand: 'node --test {tests}' },
+        adapter: withPatterns,
+        catalog: { path: path.join(dir, 'mutants.json'), mutants: [] },
+      });
+      assert.ok(
+        !report.issues.some((i) => i.code === 'adapter-no-test-patterns'),
+        'patterns cannot be judged when git could not list the tree',
+      );
+
+      // The other half needs no git at all, so it is still reported.
+      const noPatterns = validateCatalog({
+        repoRoot: dir,
+        config: { testCommand: 'node --test {tests}' },
+        adapter: { ...withPatterns, testFilePatterns: [] },
+        catalog: { path: path.join(dir, 'mutants.json'), mutants: [] },
+      });
+      assert.ok(noPatterns.issues.some((i) => i.code === 'adapter-no-test-patterns'));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   test('a shipped adapter raises neither', async () => {
