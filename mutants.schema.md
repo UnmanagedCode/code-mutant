@@ -120,8 +120,9 @@ Learn mode only: a mutant with no `expectFail`/`expectPass` at all falls back to
 
 ## Refusals
 
-The runner refuses rather than guessing. Each produces `ERROR` for that mutant (or a usage error
-before the run):
+The runner refuses rather than guessing. Each produces `ERROR` for that mutant — except `timed-out`,
+which produces `TIMEOUT` (both are ungraded; see [the ungraded-result
+shape](#the-shape-of-an-ungraded-result)) — or a usage error before the run:
 
 | Code | Cause |
 |---|---|
@@ -134,11 +135,12 @@ before the run):
 | `patch-unparseable` / `patch-rejected` | git could not read the patch, or it does not apply. |
 | `scope-non-green` | The narrowed scope was already failing, or exited non-zero, before any mutation. |
 | `scope-timed-out` | The narrowed scope was killed at its deadline **before any mutation** — `hang.blame: "suite"`, a project defect rather than a mutant to rewrite. |
+| `output-truncated` | The captured output exceeded the capture limit; failure names and/or the summary banner may be missing, so no verdict can be trusted. Never `SURVIVED`. |
 | `output-incomplete` | The command exited but its output streams were still open when the drain grace expired, so something else was holding them and the capture may be short. Treated exactly as `output-truncated`: never `SURVIVED`. |
 | `scope-empty` | The narrowed scope ran **zero tests**. Never reported as `SURVIVED`. |
 | `unexplained-exit` | Counted mode: the command exited non-zero while naming **no failing test** — something the adapter cannot see went wrong, so the run is not observably green. Never reported as `SURVIVED`. |
 | `canary-not-established` | Exit-code mode: the gate could not be shown to observe a deliberate break in the mutated file, so its "survivor" means nothing. |
-| `timed-out` | The command exceeded `timeoutMs`. |
+| `timed-out` | The command was killed at its deadline (`results[].deadlineMs`; `timeoutMs` only for a command with no unmutated reference). |
 | `dirty-tree` | Trust gate, `baseline`/`run` (before baseline and canary): the worktree has uncommitted or untracked-and-not-gitignored changes. `--allow-dirty` overrides it; `probe` only warns. See [The clean-tree gate](#the-clean-tree-gate). |
 | `empty-diff-vs-base` | Trust gate, `run` only: `baseBranch` is configured, distinct from the branch HEAD is on, and there is no diff against it — nothing committed to mutate. See [The clean-tree gate](#the-clean-tree-gate). |
 | `base-unresolvable` | Trust gate, `run` only: `baseBranch`/`--base` does not resolve to a real branch or commit. A gate failure, not a process exit — a typo'd branch name must read the same as any other trust-gate failure. |
@@ -342,7 +344,8 @@ ceiling. `results[].deadlineMs` is what the command actually got.
 | per-mutant canary (`scope: 'mutant'`) | that scope's narrow-baseline `durationMs` | derived |
 | `setup` / `teardown` hooks | none | `timeoutMs` |
 
-Derivation and the `hang` config key are documented once, in the README's config table.
+The derivation itself and the `hang` config key live in the README's config table and in
+`mutate.mjs --help`, the two homes every config key has in this project; not restated here.
 
 `hang` is non-null **only** when a command was killed at its deadline, and `blame` is sound without
 any extra run:
@@ -366,7 +369,7 @@ one field it looked at. So the contract is:
 | Field | Graded (`KILLED`/`SURVIVED`/`IMPRECISE`/`LEARNED`) | Ungraded (`ERROR`/`TIMEOUT`) |
 |---|---|---|
 | `graded` | `true` | `false` |
-| `reason` | `null`, or one of the four `IMPRECISE` codes | always a non-null refusal code |
+| `reason` | `null`, or one of the four `IMPRECISE` codes (`compile-error`, `expect-pass-broke`, `extra-failures`, `partial-kill`) | always a non-null refusal code — see [Refusals](#refusals) |
 | `failedTests` | `[]` when nothing failed — a **measurement** | `null` — nothing is *nameable* |
 | `unexpectedFailures` / `missingFailures` | `[]` | `null` |
 

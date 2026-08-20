@@ -87,7 +87,7 @@ command syntax, `mutate.mjs --help` or the project's `harness/mutation/README.md
   report the suite defect upward and do **not** rewrite the mutant, which cannot fix it.
 - `ERROR` → a harness or catalog problem (stale anchor, unusable scope) — fix or drop the mutant,
   not a coverage finding either. Never read one as a survivor: `graded: false` and
-  `failedTests: null` mark it (`mutants.schema.md`).
+  `failedTests: null` mark it (`mutants.schema.md#the-shape-of-an-ungraded-result`).
 
 ## 8. Report
 
