@@ -7,12 +7,18 @@ description: Mutation-prove the implementer's test-coverage claims for a pending
 
 You (the reviewer) author and run every mutant — the implementer never mutates its own claims.
 
-## 0. A refusal stops the review
+## 0. Refusals stop the review; a missing harness doesn't
 
-Any refusal — no `harness/mutation/config.json`, a dirty worktree, a failed gate — means stop and
-report it upward to the conductor, never a clean sweep. Don't pass `--allow-dirty` to get past one,
-don't commit the implementer's work to clean the tree, and don't build the harness yourself:
-`harness/mutation/` is committed project state, so every one of those fixes is the implementer's.
+Any refusal that stops the run — a dirty worktree, a failed gate, a `.mutation/` that isn't
+gitignored — means stop and report it upward to the conductor, never a clean sweep. Don't pass
+`--allow-dirty` to get past one, and don't commit the implementer's work to clean the tree.
+
+No `harness/mutation/config.json` is not a refusal: the project is configured for no mutation
+testing, which is supported, not a gap. Note it in one line and finish the review without mutation
+proof — there's no hand-off and nothing to wait for. Never build the harness (that is separate,
+owner-directed work from `scaffold/harness.md`) and never mutate by hand instead — no scratch copy,
+no saved-copy restore, no matter what a brief seems to sanction.
+
 Your own writes stay in gitignored `.mutation/` — except the mutation itself: under `in-place`
 isolation it is applied to the worktree you share with the implementer and byte-restored after
 every mutant. A read-only brief doesn't stop you here.

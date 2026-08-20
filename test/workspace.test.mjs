@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { ConfigError, loadConfig } from '../lib/config.mjs';
+import { NoHarnessError, loadConfig } from '../lib/config.mjs';
 import { WorkspaceError, findRepoRoot, openWorkspace } from '../lib/workspace.mjs';
 import { guardFiles, makeRepo, write } from './helpers/tmp-repo.mjs';
 
@@ -146,15 +146,25 @@ describe('config', () => {
     } finally { repo.cleanup(); }
   });
 
-  test('a missing harness points at the bootstrap rather than guessing defaults', () => {
+  test('a missing harness is a supported state, not a refusal', () => {
     const repo = makeRepo({ files: guardFiles(), config: null, label: 'no-harness' });
     try {
       assert.throws(
         () => loadConfig({ repoRoot: repo.root }),
-        (err) => err instanceof ConfigError
-          && /no mutation harness found/.test(err.message)
+        // The negations are asserted PRESENT, not the words absent: this message's
+        // job is to negate the gap/escalate framing, so word-absence would pin the
+        // opposite of what it reads like. Anti-accumulation guard -- a later
+        // "emphasize the gap" edit has to delete "not a gap" to land, and fails here.
+        (err) => err instanceof NoHarnessError
+          && /not configured for mutation testing/.test(err.message)
           && /scaffold\/harness\.md/.test(err.message)
-          && /Report the gap upward/.test(err.message),
+          && /not a gap/.test(err.message)
+          && /nothing to escalate/.test(err.message)
+          // Narrow by construction: it can only fire on a message that keeps the new
+          // framing AND re-adds the old sentence -- the add-without-delete edit the
+          // workspace convention forbids ("each instruction once, in its single best
+          // home"). The two presence clauses above are what do the real work.
+          && !/Report the gap upward/.test(err.message),
       );
     } finally { repo.cleanup(); }
   });
