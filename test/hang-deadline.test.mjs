@@ -30,6 +30,7 @@ import { loadConfig } from '../lib/config.mjs';
 import { execute } from '../lib/runner.mjs';
 import { Reason, Verdict } from '../lib/classify.mjs';
 import { hangDeadlineMs } from '../lib/measure.mjs';
+import { toJson } from '../lib/report.mjs';
 import { GUARD_SOURCE, GUARD_TESTS, guardFiles, makeRepo } from './helpers/tmp-repo.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -180,6 +181,7 @@ describe('the adaptive hang deadline', () => {
       // Graded exactly as it would be today.
       assert.equal(result.verdict, Verdict.KILLED, result.detail);
       assert.equal(result.hang, null, 'a graded mutant carries no hang record');
+      assert.equal(toJson(report).results[0].graded, true);
 
       // THE CLAUSE THAT MAKES THIS NON-VACUOUS. A ratio of two measurements from
       // one run on one machine: it proves the mutant run took a real multiple of

@@ -351,6 +351,32 @@ any extra run:
 
 `gates.baseline.timedOut` is the same signal one level up, for a hang at the gate.
 
+## The shape of an ungraded result
+
+`ERROR` and `TIMEOUT` mean **no verdict was reached**. The 2026-0183 failure was a consumer
+collapsing those into survivors, and it was possible because both carried `failedTests: []` — the
+one field it looked at. So the contract is:
+
+> **No field on an ungraded result carries the value it would carry on a `SURVIVED` result.**
+
+| Field | Graded (`KILLED`/`SURVIVED`/`IMPRECISE`/`LEARNED`) | Ungraded (`ERROR`/`TIMEOUT`) |
+|---|---|---|
+| `graded` | `true` | `false` |
+| `reason` | `null`, or one of the four `IMPRECISE` codes | always a non-null refusal code |
+| `failedTests` | `[]` when nothing failed — a **measurement** | `null` — nothing is *nameable* |
+| `unexpectedFailures` / `missingFailures` | `[]` | `null` |
+
+Three independent fields, so a consumer keyed on any one of them reads correctly. `graded` is
+**derived from the verdict alone** and cannot contradict it. In the printed matrix an ungraded row's
+`actual` column reads `not graded`, never `(none)`.
+
+`summary.errored + summary.timedOut === summary.noVerdict`, which is why there is no fourth
+synonym field.
+
+The run report has **no `problem` field** — that belongs to
+[`validate`](#the-validate-report), which emits a deliberately different shape. A consumer looking
+for `problem` on a run result is reading the wrong report.
+
 ## Exit codes
 
 | Code | Meaning |
