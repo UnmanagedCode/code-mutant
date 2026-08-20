@@ -477,6 +477,53 @@ describe('custom adapter canary prerequisites', () => {
     } finally { repo.cleanup(); }
   });
 
+  test('the measured cap also reports the candidates it never reached', async () => {
+    // The OTHER half of the same guard, which the decline-ceiling test above
+    // cannot reach: here there are ZERO declines and the 5-measured cap is what
+    // ends the walk. Keep both -- a guard keyed on the decline ceiling alone
+    // passes that test while going silent on exactly this shape (five candidates
+    // tried, none in the command's scope, the real tests further down the sort),
+    // which is the tidy-up this pins against.
+    const files = guardFiles();
+    const extra = Array.from({ length: 7 }, (_, i) => `test/m${i}.test.mjs`);
+    for (const file of extra) files[file] = `// ${file}: a canary candidate\n`;
+    const repo = makeRepo({
+      files,
+      config: { runner: 'custom', isolation: 'copy', baselineCommand: "node --test 'test/guard.test.mjs'" },
+      label: 'custom-measured-cap',
+    });
+    write(repo.root, 'harness/mutation/parse.mjs', `
+      export { parse } from ${JSON.stringify(NODE_TEST_MODULE)};
+      export const testFilePatterns = ['test/**/*.test.mjs'];
+      // Accepts every file and injects nothing, so every candidate is a real
+      // measured run that does not establish the gate.
+      export function canary(source) {
+        return { content: source, testId: 'never-fires', matches: () => false };
+      }
+    `);
+    try {
+      const report = await run(repo, [], {}, { allowDirty: true });
+      const { canary } = report.gates;
+      assert.equal(canary.status, CanaryStatus.FAILED);
+      assert.equal(canary.attempts.length, 5, 'the cap counts measured runs, and there are 8 candidates');
+      for (const attempt of canary.attempts) {
+        assert.match(attempt.why, /does not observe failures in that file/, 'a measured attempt, not a decline');
+      }
+      // Sorted order is guard, m0, m1, m2, m3 -- five tried, m4-m6 never reached.
+      assert.deepEqual(
+        canary.attempts.map((a) => a.target),
+        ['test/guard.test.mjs', 'test/m0.test.mjs', 'test/m1.test.mjs', 'test/m2.test.mjs', 'test/m3.test.mjs'],
+      );
+      assert.equal(canary.target, 'test/m3.test.mjs', 'the last candidate a command ran against');
+      assert.match(canary.detail, /Stopped after 5 of 8 candidates/);
+      assert.match(canary.detail, /narrow testFilePatterns/);
+      // Only the caps clause may mention declines; there is no decline sentence,
+      // because nothing was declined.
+      assert.doesNotMatch(canary.detail, /was declined|were declined/, 'no candidate was declined here');
+      assert.equal(exitCodeFor(report), ExitCode.GATE_FAILED);
+    } finally { repo.cleanup(); }
+  });
+
   test('a FAILED gate names where a command actually ran, never a declined candidate', async () => {
     // The report renders `target` as "via <file>", which must not point at a file
     // nothing was ever injected into. Sorted order puts the decline LAST here, so
