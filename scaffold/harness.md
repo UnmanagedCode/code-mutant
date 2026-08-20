@@ -32,10 +32,10 @@ Build a project-local mutation-testing harness at `harness/mutation/`, driven by
      fits, and write a `custom` parser instead if it disagrees.
    - Nothing matches — write the `custom` parser. That is the intended path, not a last resort:
      `harness/mutation/parse.mjs` (that exact filename, beside `config.json`) exporting
-     `parse(stdout, stderr, exitCode)` — **plus `testFilePatterns` and `canary`**, which default to
-     nothing and make the canary gate fail every run rather than pass silently. Full export
-     contract: `code-mutant`'s `mutants.schema.md` Appendix B. Prove it against the captured output
-     before finishing.
+     `parse(stdout, stderr, exitCode)` — **plus, for a counted grade, `testFilePatterns` and
+     `canary`**, which default to nothing and make the canary gate fail every run rather than pass
+     silently. Full export contract: `code-mutant`'s `mutants.schema.md` Appendix B. Prove it
+     against the captured output before finishing.
 
    A counted-grade command must exit 0 whenever no test failed: one that chains a lint or guardrail
    step exiting non-zero on its own fails the baseline gate (`outcome: "failed"`), so scope

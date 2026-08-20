@@ -6,9 +6,9 @@ by-hand practice in this workspace: revert a fix in an isolated copy, confirm th
 to cover it actually fails, and treat "passes either way" as proof the claim is false. The plugin
 turns the by-hand parts (anchoring an edit, applying it, running the suite, parsing the output,
 restoring the file, re-running prior rounds' mutants) into one shared runner, and retires the
-by-hand version: a reviewer with no harness reports the absence and proceeds, it never re-improvises
-the mechanics. The judgment half —
-which invariant is worth attacking, whether a survivor blocks landing — stays with the agents.
+by-hand version: a reviewer with no harness reports the absence and proceeds — it never reverts a
+fix by hand in a copy of its own. The judgment half — which invariant is worth attacking, whether a
+survivor blocks landing — stays with the agents.
 
 **Division of labour:** the **reviewer** authors and runs every mutant against the **implementer**'s
 coverage claims; the implementer never mutates its own claims, because left to itself it only ever
@@ -48,8 +48,9 @@ survivors as findings the conductor can arbitrate without reading project code. 
 
 ## The mutation harness — `harness/mutation/`
 
-Built once per project by the scaffold above, committed to the project's repo (the *how* persists;
-see [Artifact lifetime](#artifact-lifetime) below). `harness/mutation/config.json` fields:
+Built once, in a project opted into mutation testing, by the scaffold above, committed to the
+project's repo (the *how* persists; see [Artifact lifetime](#artifact-lifetime) below).
+`harness/mutation/config.json` fields:
 
 | Field | Default | Meaning |
 |---|---|---|

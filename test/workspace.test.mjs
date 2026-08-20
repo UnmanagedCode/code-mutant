@@ -160,6 +160,10 @@ describe('config', () => {
           && /scaffold\/harness\.md/.test(err.message)
           && /not a gap/.test(err.message)
           && /nothing to escalate/.test(err.message)
+          // Narrow by construction: it can only fire on a message that keeps the new
+          // framing AND re-adds the old sentence -- i.e. an add-without-delete edit,
+          // this repo's documented failure mode. The two presence clauses above are
+          // what do the real work.
           && !/Report the gap upward/.test(err.message),
       );
     } finally { repo.cleanup(); }

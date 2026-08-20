@@ -56,8 +56,16 @@ describe('a project with no harness', () => {
     try {
       const result = await runCli(['baseline', '--json'], { cwd: repo.root });
       assert.equal(result.stderr, '');
+      assert.doesNotMatch(result.stdout, /^code-mutant: /m, 'no error prefix');
       assert.match(result.stdout, /not configured for mutation testing/);
       assert.equal(result.exitCode, ExitCode.NO_HARNESS);
+
+      // The shape assertion is the one that pins the omission. `assert.match` is
+      // substring semantics and JSON.stringify escapes nothing in this notice, so
+      // every assertion above survives wrapping it in an envelope -- this test
+      // would go green on the exact change it exists to forbid.
+      assert.doesNotMatch(result.stdout, /^\s*[{[]/, 'the notice is plain text, not a JSON envelope');
+      assert.throws(() => JSON.parse(result.stdout), 'and must not parse as JSON');
     } finally { repo.cleanup(); }
   });
 });

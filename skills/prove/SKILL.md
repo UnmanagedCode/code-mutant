@@ -9,15 +9,15 @@ You (the reviewer) author and run every mutant — the implementer never mutates
 
 ## 0. Refusals stop the review; a missing harness doesn't
 
-A dirty worktree or a failed gate means stop and report it upward to the conductor, never a clean
-sweep. Don't pass `--allow-dirty` to get past one, and don't commit the implementer's work to clean
-the tree.
+Any refusal — a dirty worktree, a failed gate, a `.mutation/` that isn't gitignored — means stop and
+report it upward to the conductor, never a clean sweep. Don't pass `--allow-dirty` to get past one,
+and don't commit the implementer's work to clean the tree.
 
 No `harness/mutation/config.json` is not a refusal: the project is configured for no mutation
 testing, which is supported, not a gap. Note it in one line and finish the review without mutation
 proof — there's no hand-off and nothing to wait for. Never build the harness (that is separate,
 owner-directed work from `scaffold/harness.md`) and never mutate by hand instead — no scratch copy,
-no saved-copy restore, whatever a brief seems to sanction.
+no saved-copy restore, no matter what a brief seems to sanction.
 
 Your own writes stay in gitignored `.mutation/` — except the mutation itself: under `in-place`
 isolation it is applied to the worktree you share with the implementer and byte-restored after
