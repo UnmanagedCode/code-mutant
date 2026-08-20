@@ -18,7 +18,7 @@ import { loadAdapter } from '../lib/adapters/index.mjs';
 import { loadConfig } from '../lib/config.mjs';
 import { execute } from '../lib/runner.mjs';
 import { Reason, Verdict } from '../lib/classify.mjs';
-import { CanaryStatus } from '../lib/gates.mjs';
+import { CanaryStatus, runCanaryGate } from '../lib/gates.mjs';
 import { ExitCode, exitCodeFor } from '../lib/report.mjs';
 import { guardFiles, makeRepo, write } from './helpers/tmp-repo.mjs';
 
@@ -341,22 +341,89 @@ describe('custom adapter canary prerequisites', () => {
     } finally { repo.cleanup(); }
   });
 
-  test('a canary() that returns null for every target is still a gate failure, not a pre-flight refusal', async () => {
-    const repo = customRepo('custom-canary-null', `
+  test('a canary() that declines every target is a gate failure, not a pre-flight refusal', async () => {
+    // An EXPORTED canary that returns null is statically indistinguishable from a
+    // legal conditional one, so it cannot be refused from the exports: it must
+    // reach the gate and be recorded per candidate. Both candidates here decline,
+    // so both are recorded and the gate then fails.
+    const files = guardFiles();
+    files['test/aaa.test.mjs'] = "import { test } from 'node:test';\ntest('a', () => {});\n";
+    const repo = makeRepo({
+      files,
+      config: { runner: 'custom', isolation: 'copy' },
+      label: 'custom-canary-null',
+    });
+    write(repo.root, 'harness/mutation/parse.mjs', `
       export { parse } from ${JSON.stringify(NODE_TEST_MODULE)};
       export const testFilePatterns = ['test/**/*.test.mjs'];
       export function canary() { return null; }
     `);
     try {
       const report = await run(repo, [], {}, { allowDirty: true });
-      // A conditional parser that declines THIS file is statically
-      // indistinguishable from a legal one, so it must reach the gate and be
-      // recorded as an attempt rather than refused from its exports.
       assert.equal(report.gates.baseline.outcome, 'passed');
       assert.equal(report.gates.canary.status, CanaryStatus.FAILED);
-      assert.equal(report.gates.canary.attempts.length, 1);
-      assert.match(report.gates.canary.attempts[0].why, /cannot synthesise a canary test/);
+      assert.deepEqual(
+        report.gates.canary.attempts.map((a) => a.target),
+        ['test/aaa.test.mjs', 'test/guard.test.mjs'],
+        'a decline must not stop the remaining candidates from being offered',
+      );
+      assert.match(report.gates.canary.attempts[0].why, /declined/);
       assert.equal(exitCodeFor(report), ExitCode.GATE_FAILED);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a canary() that declines ONE file still establishes the gate on the next candidate', async () => {
+    // `mutants.schema.md` promises up to 5 candidates are tried, and declining a
+    // file is legal (an unfamiliar dialect, a generated fixture). Sorted order
+    // puts the declined file first, so a gate that stopped at the first decline
+    // would fail here while the very next candidate would have fired.
+    const files = guardFiles();
+    files['test/aaa.test.mjs'] = "import { test } from 'node:test';\ntest('a', () => {});\n";
+    const repo = makeRepo({
+      files,
+      config: { runner: 'custom', isolation: 'copy' },
+      label: 'custom-canary-declines-one',
+    });
+    write(repo.root, 'harness/mutation/parse.mjs', `
+      import { canary as nodeTestCanary } from ${JSON.stringify(NODE_TEST_MODULE)};
+      export { parse } from ${JSON.stringify(NODE_TEST_MODULE)};
+      export const testFilePatterns = ['test/**/*.test.mjs'];
+      export function canary(source, { file }) {
+        if (file === 'test/aaa.test.mjs') return null;
+        return nodeTestCanary(source, { file });
+      }
+    `);
+    try {
+      const report = await run(repo, [], {}, { allowDirty: true });
+      assert.equal(report.gates.canary.status, CanaryStatus.KILLED);
+      assert.equal(report.gates.canary.target, 'test/guard.test.mjs');
+      assert.deepEqual(report.gates.canary.attempts.map((a) => a.target), ['test/aaa.test.mjs']);
+      assert.match(report.gates.canary.attempts[0].why, /declined/);
+      assert.equal(exitCodeFor(report), ExitCode.CLEAN);
+    } finally { repo.cleanup(); }
+  });
+
+  test('the gate diagnoses a canary-less or grade-less adapter instead of throwing', async () => {
+    // The gate's own guard, reached only by a DIRECT caller -- execute() refuses
+    // both shapes earlier. Measured before it was keyed on `grade !== exit-code`:
+    // an adapter whose grade export is missing or miscased fell into this branch
+    // and threw `inject is not a function`.
+    const repo = makeRepo({ files: guardFiles(), config: { isolation: 'copy' }, label: 'gate-direct-call' });
+    try {
+      const config = loadConfig({ repoRoot: repo.root });
+      const base = await loadAdapter('node-test', { configDir: config.configDir });
+      for (const grade of ['counted', undefined, 'Counted']) {
+        const gate = await runCanaryGate({
+          config,
+          adapter: { ...base, name: 'hand-built', grade, canary: null },
+          workspace: { root: repo.root },
+          command: config.baselineCommand,
+          scope: 'baseline',
+        });
+        assert.equal(gate.status, CanaryStatus.FAILED, `grade ${JSON.stringify(grade)} must be diagnosed`);
+        assert.match(gate.detail, /does not export canary/);
+        assert.deepEqual(gate.attempts, []);
+      }
     } finally { repo.cleanup(); }
   });
 

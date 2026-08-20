@@ -360,12 +360,78 @@ describe('validate reports the adapter-level canary prerequisites', () => {
       const issue = report.issues.find((i) => i.code === 'adapter-no-test-patterns');
       assert.ok(issue, 'expected an adapter-no-test-patterns issue');
       assert.equal(issue.severity, 'warning');
-      // Both halves, or it reads as a defect when it is a degradation of one
-      // command only.
-      assert.match(issue.detail, /cannot find a target file and the canary gate fails/);
-      assert.match(issue.detail, /`run` works when an "expectFail" reference/);
+      // BOTH halves: without the second this reads as a defect when it is a
+      // degradation of one command only.
+      assert.match(issue.detail, /cannot find a target file/);
+      assert.match(issue.detail, /run` works/);
       assert.equal(report.summary.problems, 0);
       assert.equal(exitCode, 0, 'a warning must never fail the exit code');
+    } finally { repo.cleanup(); }
+  });
+
+  test('testFilePatterns that match no tracked file warn the same as none at all', async () => {
+    // The two shapes leave `baseline` in the identical state -- no candidate to
+    // inject into -- so keying the warning on the patterns being EMPTY let this
+    // one validate clean at exit 0 while `baseline` on the same tree exited 2.
+    // Checked with the gate's own discovery call, which runs no command.
+    const repo = customRepo('validate-patterns-match-nothing', `
+      export { parse, canary } from ${JSON.stringify(NODE_TEST_MODULE)};
+      export const testFilePatterns = ['spec/**/*.spec.js'];
+    `);
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      const issue = report.issues.find((i) => i.code === 'adapter-no-test-patterns');
+      assert.ok(issue, 'expected an adapter-no-test-patterns issue');
+      assert.equal(issue.severity, 'warning');
+      assert.match(issue.detail, /match no tracked file/);
+      assert.match(issue.detail, /spec\/\*\*\/\*\.spec\.js/, 'name the patterns that matched nothing');
+      assert.equal(exitCode, 0);
+    } finally { repo.cleanup(); }
+  });
+
+  test('testFilePatterns that DO match raise nothing', async () => {
+    const repo = customRepo('validate-patterns-match', `
+      export { parse, canary } from ${JSON.stringify(NODE_TEST_MODULE)};
+      export const testFilePatterns = ['test/**/*.test.mjs'];
+    `);
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      assert.equal(report.issues.length, 0, JSON.stringify(report.issues));
+      assert.equal(exitCode, 0);
+    } finally { repo.cleanup(); }
+  });
+
+  test('an adapter missing both exports learns both facts in one pass', async () => {
+    const repo = customRepo('validate-missing-both', `export { parse } from ${JSON.stringify(NODE_TEST_MODULE)};\n`);
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      const codes = report.issues.map((i) => i.code);
+      assert.ok(codes.includes('adapter-no-canary'), codes.join(', '));
+      assert.ok(
+        codes.includes('adapter-no-test-patterns'),
+        'the canary problem must not hide the patterns warning -- one pass, one fix list',
+      );
+      assert.equal(exitCode, 4);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a run-level problem is not reported as a catalog fault', async () => {
+    // The catalog here resolves perfectly; the ADAPTER is what `run` refuses. The
+    // human-readable tail used to print "0 with a problem" directly above "the
+    // catalog does not resolve against this tree", pointing the reader at the one
+    // file that is fine.
+    const repo = customRepo('validate-run-level-prose', `export { parse } from ${JSON.stringify(NODE_TEST_MODULE)};\n`);
+    try {
+      const { exitCode, stdout } = await validate(repo);
+      assert.equal(exitCode, 4);
+      assert.match(stdout, /1 resolve, 0 with a problem/);
+      assert.match(stdout, /run-level problem\(s\) above, outside the catalog/);
+      assert.doesNotMatch(
+        stdout,
+        /the catalog does not resolve against this tree/,
+        'the exit line must not diagnose a catalog that resolves',
+      );
+      assert.match(stdout, /exit 4:.*run-level problem/);
     } finally { repo.cleanup(); }
   });
 

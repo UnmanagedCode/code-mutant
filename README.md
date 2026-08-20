@@ -72,12 +72,8 @@ for a gate that emits no counts at all, `"exit-code"` reads the exit status alon
 signal grade; see [Narrowing and signal grades](#narrowing-and-signal-grades)). The intended
 extension path is **`custom`: you write your own.** A project points `runner` at
 `"custom"`, drops a `parse.mjs` beside its `config.json` exporting
-`parse(stdout, stderr, exitCode)`, and proves it against output it captured from its own suite. At
-counted grade it must also export `canary(source, {file})` — without it no canary can be synthesised
-for any file, so `run` refuses the harness pre-flight (exit 2) rather than after paying for the
-baseline, and `validate` reports it as a problem. A gate with nothing to parse declares
-`export const grade = "exit-code"` and needs neither that nor `testFilePatterns`. The full export
-contract is specified in [`mutants.schema.md`](mutants.schema.md) (Appendix B). Adapters
+`parse(stdout, stderr, exitCode)`, and proves it against output it captured from its own suite. The
+full export contract is specified in [`mutants.schema.md`](mutants.schema.md) (Appendix B). Adapters
 that prove themselves useful across projects are the candidates for being pulled up into the plugin
 later — that is how this list is meant to grow.
 
