@@ -120,8 +120,9 @@ Learn mode only: a mutant with no `expectFail`/`expectPass` at all falls back to
 
 ## Refusals
 
-The runner refuses rather than guessing. Each produces `ERROR` for that mutant (or a usage error
-before the run):
+The runner refuses rather than guessing. Each produces `ERROR` for that mutant — except `timed-out`,
+which produces `TIMEOUT` (both are ungraded; see [the ungraded-result
+shape](#the-shape-of-an-ungraded-result)) — or a usage error before the run:
 
 | Code | Cause |
 |---|---|
@@ -133,10 +134,13 @@ before the run):
 | `mixed-site-forms` | An anchor site and a patch site of one mutant touch the same file. |
 | `patch-unparseable` / `patch-rejected` | git could not read the patch, or it does not apply. |
 | `scope-non-green` | The narrowed scope was already failing, or exited non-zero, before any mutation. |
+| `scope-timed-out` | The narrowed scope was killed at its deadline **before any mutation** — `hang.blame: "suite"`, a project defect rather than a mutant to rewrite. |
+| `output-truncated` | The captured output exceeded the capture limit; failure names and/or the summary banner may be missing, so no verdict can be trusted. Never `SURVIVED`. |
+| `output-incomplete` | The command exited but its output streams were still open when the drain grace expired, so something else was holding them and the capture may be short. Treated exactly as `output-truncated`: never `SURVIVED`. |
 | `scope-empty` | The narrowed scope ran **zero tests**. Never reported as `SURVIVED`. |
 | `unexplained-exit` | Counted mode: the command exited non-zero while naming **no failing test** — something the adapter cannot see went wrong, so the run is not observably green. Never reported as `SURVIVED`. |
 | `canary-not-established` | Exit-code mode: the gate could not be shown to observe a deliberate break in the mutated file, so its "survivor" means nothing. |
-| `timed-out` | The command exceeded `timeoutMs`. |
+| `timed-out` | The command was killed at its deadline (`results[].deadlineMs`; `timeoutMs` only for a command with no unmutated reference). |
 | `dirty-tree` | Trust gate, `baseline`/`run` (before baseline and canary): the worktree has uncommitted or untracked-and-not-gitignored changes. `--allow-dirty` overrides it; `probe` only warns. See [The clean-tree gate](#the-clean-tree-gate). |
 | `empty-diff-vs-base` | Trust gate, `run` only: `baseBranch` is configured, distinct from the branch HEAD is on, and there is no diff against it — nothing committed to mutate. See [The clean-tree gate](#the-clean-tree-gate). |
 | `base-unresolvable` | Trust gate, `run` only: `baseBranch`/`--base` does not resolve to a real branch or commit. A gate failure, not a process exit — a typo'd branch name must read the same as any other trust-gate failure. |
@@ -263,10 +267,17 @@ finding can be pointed at exactly the commit it was found against.
     baseDiff:  { outcome: "passed"|"failed"|"not-established", code: "empty-diff-vs-base"|"base-unresolvable"|null,
                  base, currentBranch, mergeBase, detail },   // `run` only
     baseline: { outcome: "passed"|"failed", command, counts: {passed,failed,skipped,ran}|null, exitCode,
-                failedTests: [string]|null, detail },   // null when nothing is nameable (exit-code grade, or a
-                                                         // FAILED baseline with no parsed failure to name); [] only when green
-    canary:   { outcome, status: "KILLED"|"FAILED"|"NOT-ESTABLISHED", grade, target, detail }
+                failedTests: [string]|null, durationMs, timedOut, detail },   // failedTests: null when nothing is nameable
+                                                         // (exit-code grade, or a FAILED baseline with no parsed
+                                                         // failure to name); [] only when green
+    canary:   { outcome, status: "KILLED"|"FAILED"|"NOT-ESTABLISHED", grade, target, durationMs,
+                attempts: [ { target, durationMs, why } ],   // every candidate tried and why it did not fire
+                detail }
   },
+  narrowBaselines: [ { command, green, counts, durationMs } ],   // one entry per DISTINCT narrow scope
+  timings: { totalMs, gatesMs, narrowBaselinesMs, mutantsMs },
+  resumed:   { journal, key, reused, ran } | null,   // non-null iff --resume was passed
+  resumable: { key, available } | null,             // ADVISORY: a journal matches and --resume was NOT passed
   results: [ {
     id, invariant, whyNotEquivalent, waived,
     verdict: "KILLED"|"SURVIVED"|"IMPRECISE"|"TIMEOUT"|"ERROR"|"LEARNED",
@@ -284,11 +295,17 @@ finding can be pointed at exactly the commit it was found against.
     mutantCounts:   { passed, failed, skipped, ran },
     delta:          { passed, failed, skipped },
     canary,                       // exit-code mode only: the per-mutant gate, when one was needed
-    exitCode, durationMs
+    exitCode, durationMs,
+    applyMs, measureMs, restoreMs,  // this mutant's three phases; each null for a phase that never ran
+    deadlineMs,                     // the wall-clock cap this mutant's command actually got
+    hang: { blame: "mutation"|"suite", deadlineMs, referenceMs } | null,  // non-null ONLY on a deadline kill
+    graded,                         // derived from `verdict` alone -- see below
+    fromJournal                     // true iff reused by --resume rather than measured this invocation
   } ],
   noTrace: { ok, before, after } | null,
   pathSetMismatches: [ … ],
-  summary: { total, open, waived, survivors, waivedSurvivors, noVerdict, killed, imprecise, learned },
+  summary: { total, open, waived, survivors, waivedSurvivors, noVerdict, errored, timedOut,
+             killed, imprecise, learned },   // errored + timedOut === noVerdict
   exitCode: number
 }
 ```
@@ -296,6 +313,130 @@ finding can be pointed at exactly the commit it was found against.
 `narrowBaseline.counts` is the **same scope measured unmutated**, memoised per resolved command
 string. It exists so `delta` compares like with like: the global baseline runs the whole suite while
 a mutant runs a narrowed scope, so comparing those two would show the narrowing, not the mutation.
+
+## Where a run's wall time went
+
+Every measured command reports its own `durationMs`, and `timings` is **derived** from those — it
+sums nothing that is not also on the report, so the breakdown cannot drift from the numbers it
+sums.
+
+| Field | Covers |
+|---|---|
+| `timings.totalMs` | The whole invocation, including a run that stopped at a failed gate. |
+| `timings.gatesMs` | `gates.baseline.durationMs + gates.canary.durationMs`. The **fixed** cost — paid once per invocation regardless of mutant count. |
+| `timings.narrowBaselinesMs` | Sum of `narrowBaselines[].durationMs` — one measured command per *distinct* scope, so N mutants at one scope cost one entry. |
+| `timings.mutantsMs` | Sum of `results[].durationMs`. A **sum of per-mutant wall clocks**, so under `jobs > 1` it legitimately exceeds `totalMs`. |
+| `results[].applyMs` / `measureMs` / `restoreMs` | The harness's own snapshot+apply and restore cost, versus the project's command. Disjoint slices of that result's `durationMs`; `null` for a phase that never ran (an `ERROR` that stopped before Phase B). The remainder, when there is one, is the per-mutant exit-code canary — its own cost is on `results[].canary.durationMs`. |
+| `gates.canary.attempts[].durationMs` | Each entry is a **whole `baselineCommand` run** against a candidate that did not fire. Up to 5 candidates are tried, so a project whose early candidates sit outside its `baselineCommand`'s scope pays that multiple before the gate establishes anything. |
+
+## Deadlines and hang blame
+
+`timeoutMs` is the **ceiling**. A measured command that has a **like-for-like unmutated reference**
+gets a tighter deadline derived from it instead; only a command with no reference falls back to the
+ceiling. `results[].deadlineMs` is what the command actually got.
+
+| Command | Reference | Deadline |
+|---|---|---|
+| global baseline | none | `timeoutMs` |
+| narrow baseline | none | `timeoutMs` |
+| canary attempt (`scope: 'baseline'`) | the global baseline's `durationMs` — same command | derived |
+| mutant run | that scope's narrow-baseline `durationMs` — same command | derived |
+| per-mutant canary (`scope: 'mutant'`) | that scope's narrow-baseline `durationMs` | derived |
+| `setup` / `teardown` hooks | none | `timeoutMs` |
+
+The derivation itself and the `hang` config key live in the README's config table and in
+`mutate.mjs --help`, the two homes every config key has in this project; not restated here.
+
+`hang` is non-null **only** when a command was killed at its deadline. It annotates *which side* the
+kill is attributable to; the **verdict and `reason` stay the thing you act on**. These are the only
+reachable combinations:
+
+| Verdict | `reason` | `hang.blame` | Reading, and what to do |
+|---|---|---|---|
+| `TIMEOUT` | `timed-out` | `mutation` | The **mutant run** was killed. Reaching it required the *same command* to have been measured unmutated and green, so the only thing that changed is the mutation — rewrite it smaller. |
+| `ERROR` | `scope-timed-out` | `suite` | The **narrow baseline** was killed, before any mutation was applied. A project defect: report it upward, and do **not** rewrite or drop the mutant — that cannot fix it. `referenceMs` is `null`, because a narrow baseline has no reference of its own. |
+| `ERROR` | `setup-hook-failed` / `teardown-hook-failed` | `mutation` | A hook failed on a run that had also timed out — the setup hook itself, or the mutant command ahead of a failing teardown. The **hook** is what to fix; `hang` is incidental here, and `deadlineMs` names the mutant's derived deadline even though a hook runs at `timeoutMs`. |
+
+Two consequences worth stating outright, because both have been written down wrongly before:
+
+- **`blame: "suite"` never appears on `TIMEOUT`.** A mutation that was never measured cannot be
+  blamed, so a hung *unmutated* scope is `ERROR`/`scope-timed-out`. Guidance for `suite` filed under
+  `TIMEOUT` is guidance on an unreachable combination.
+- **`TIMEOUT` always carries `blame: "mutation"`, but the converse does not hold** — row three is a
+  `blame: "mutation"` that is not a `TIMEOUT`. Key routing on the verdict and `reason`, not on
+  `blame` alone.
+
+`gates.baseline.timedOut` is the same signal one level up, for a hang at the gate.
+
+## The shape of an ungraded result
+
+`ERROR` and `TIMEOUT` mean **no verdict was reached**. The 2026-0183 failure was a consumer
+collapsing those into survivors, and it was possible because both carried `failedTests: []` — the
+one field it looked at. So the contract is:
+
+> **No field on an ungraded result carries the value it would carry on a `SURVIVED` result.**
+
+| Field | Graded (`KILLED`/`SURVIVED`/`IMPRECISE`/`LEARNED`) | Ungraded (`ERROR`/`TIMEOUT`) |
+|---|---|---|
+| `graded` | `true` | `false` |
+| `reason` | `null`, or one of the four `IMPRECISE` codes (`compile-error`, `expect-pass-broke`, `extra-failures`, `partial-kill`) | always a non-null refusal code — see [Refusals](#refusals) |
+| `failedTests` | `[]` when nothing failed — a **measurement** | `null` — nothing is *nameable* |
+| `unexpectedFailures` / `missingFailures` | `[]` | `null` |
+
+Three independent fields, so a consumer keyed on any one of them reads correctly. `graded` is
+**derived from the verdict alone** and cannot contradict it. In the printed matrix an ungraded row's
+`actual` column reads `not graded`, never `(none)`.
+
+`summary.errored + summary.timedOut === summary.noVerdict`, which is why there is no fourth
+synonym field.
+
+The run report has **no `problem` field** — that belongs to
+[`validate`](#the-validate-report), which emits a deliberately different shape. A consumer looking
+for `problem` on a run result is reading the wrong report.
+
+## Resuming a run
+
+`run` appends each completed verdict to **`.mutation/journal/<key>.jsonl`** (JSON Lines, one line per
+mutant, flushed as it goes — so a process that never gets to run its exit path still leaves every
+verdict before the one in flight). Gitignored, guarded by the same assertion as
+`.mutation/results/`. `run --resume` reuses matching verdicts instead of re-measuring them.
+
+**Written only when** `reproducible === true` and `mutatedSha !== null` — a `--allow-dirty` run
+journals nothing, because a non-reproducible verdict must never become a resumable one.
+`--resume --allow-dirty` is a usage error (exit 4). Only Phase-B results are journalled; a plan
+failure (stale anchor, unparseable patch) cost no measured command and is free to recompute. A line
+is appended only after restore succeeded for that mutant, so a journalled verdict always implies its
+tree was restored and proved.
+
+**`<key>` covers** `mutatedSha`, the adapter (`name`/`grade`/`modulePath`), `isolation`, `jobs`,
+`learn`, and a config fingerprint over `baselineCommand`, `testCommand`, `runner`, `timeoutMs`,
+`hang`, `setup`, `teardown`, `preserve`. Change any of them and the key changes, so nothing is
+reused. `jobs` is in there deliberately: reusing a `jobs=4` verdict inside a `jobs=1` re-run would
+hide precisely the concurrent-suite hazard the README tells you to check for. `hang` is in there so
+retuning the deadline forces every hung mutant to be re-measured.
+
+**Per mutant**, reuse additionally requires an unchanged fingerprint over `id`, `sites`,
+`expectFail`, `expectPass`, `narrowTo` and `narrowCommand` — everything that changes *what is
+measured*. `invariant`, `whyNotEquivalent` and `waived` are deliberately **excluded**: they are prose
+and decisions, re-read from the current catalog on reuse. So recording a waiver costs no re-run.
+
+**The two things resume never does:**
+
+- **It never skips a gate.** clean-tree, empty-diff-vs-base, baseline and canary all run in full on
+  every invocation — a cached gate result would be a gate that did not run this invocation reading as
+  one that passed, the exact ambiguity `not-established` exists to prevent. Stated plainly: a resumed
+  run still pays the fixed cost. Resume saves per-mutant measurement only. (The journalled canary
+  *target* is reused as a candidate **hint**, reordering which files the gate tries first; the gate
+  still runs and must still fire.)
+- **It never assumes tree state.** The journal records verdicts, never "what I left in the tree". A
+  SIGKILL can leave a mutation behind, and on the next invocation the clean-tree gate sees it as an
+  uncommitted change and refuses (exit 2) rather than resuming onto a poisoned tree.
+
+Reuse is **opt-in** because a reused verdict was produced by a process nobody watched. Every one is
+labelled `fromJournal: true`, counted in `resumed.reused`, and named in the printed report, so it
+never reads as a verdict this run made. When a journal matches and `--resume` was *not* passed, the
+report carries `resumable` and the CLI prints an advisory naming the flag — **advisory only**: never
+a refusal, never a gate, no effect on the exit code.
 
 ## Exit codes
 

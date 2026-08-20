@@ -37,7 +37,7 @@ const HELP = `code-mutant -- mutation-verified coverage proving
 USAGE
   node mutate.mjs baseline                    [--copy|--in-place] [--allow-dirty] [--json]
   node mutate.mjs run [--id <id> ...] [--all] [--learn] [--copy|--in-place] [--jobs N]
-                      [--base <branch>] [--allow-dirty] [--json]
+                      [--base <branch>] [--allow-dirty] [--resume] [--json]
   node mutate.mjs validate                    [--json]
   node mutate.mjs probe --file <path> --anchor <text> --replace <text>
                         [--learn] [--expect-fail <test> ...] [--expect-pass <test> ...]
@@ -97,6 +97,13 @@ FLAGS
   --allow-dirty      baseline/run: proceed despite a dirty worktree instead of
                      refusing. Every verdict from that invocation is labelled
                      non-reproducible, in both the matrix and --json.
+  --resume           run: reuse per-mutant verdicts already journalled for this
+                     exact sha, config, adapter, isolation and jobs, instead of
+                     re-measuring them. Every gate still runs in full, so a
+                     resumed run still pays the baseline and canary. Opt-in:
+                     a reused verdict is one an unwatched process produced, and
+                     it is labelled fromJournal so it never reads as one this
+                     run made. Incompatible with --allow-dirty.
   --file <path>      probe: file to mutate.
   --anchor <text>    probe: exact substring to replace; must match exactly once.
   --replace <text>   probe: replacement text; must differ from the anchor.
@@ -116,11 +123,17 @@ VERDICTS
   IMPRECISE  A compile/build break, or failures outside expectFail. The mutant
              itself is invalid (often an equivalent mutant); rewrite it smaller
              rather than reporting it.
-  TIMEOUT    The mutation hung the suite. Flagged, never counted as a kill.
+  TIMEOUT    The MUTANT RUN was killed at its deadline. Flagged, never counted
+             as a kill. The same scope completed unmutated moments earlier, so
+             the mutation hung it -- rewrite it smaller. (hang.blame is always
+             "mutation" here.) A hung UNMUTATED scope is an ERROR, not this.
   ERROR      No verdict was possible: an anchor is missing or ambiguous, the
              replacement was a no-op, the narrowed scope was already broken or
-             ran zero tests, or the command exited non-zero without naming a
-             failing test.
+             ran zero tests, the narrowed scope was killed at its deadline
+             before any mutation was applied (scope-timed-out, hang.blame
+             "suite" -- report that project defect upward; rewriting or
+             dropping the mutant cannot fix it), or the command exited non-zero
+             without naming a failing test.
   LEARNED    --learn only: the observed failing set, reported without grading.
              Never produced by a graded run.
 
@@ -169,7 +182,13 @@ config.json (harness/mutation/config.json)
   isolation        "in-place" (default) or "copy".
   preserve         Paths symlinked into a copy instead of duplicated, e.g.
                    ["node_modules"].
-  timeoutMs        Per-command wall-clock cap. Default 120000.
+  timeoutMs        Per-command wall-clock ceiling, and the fallback for any
+                   command with no unmutated reference. Default 120000.
+  hang             {factor, floorMs} -- the adaptive deadline for a command
+                   that HAS a reference (a mutant run, a canary attempt):
+                   min(timeoutMs, max(floorMs, factor * referenceMs)), so
+                   only ever tighter than timeoutMs. Default
+                   {factor: 10, floorMs: 10000}. factor 0 disables it.
   jobs             Copy-mode concurrency. Default 1. See --jobs above for what
                    makes a suite unsafe to run concurrently.
   baseBranch       Optional. run's empty-diff-vs-base gate compares against
@@ -210,7 +229,9 @@ The catalog format is specified in mutants.schema.md, which also documents the
 --json report shape and the adapter parse() contract.
 `;
 
-const BOOLEAN_FLAGS = new Set(['--all', '--copy', '--in-place', '--json', '--help', '-h', '--allow-dirty', '--learn']);
+const BOOLEAN_FLAGS = new Set([
+  '--all', '--copy', '--in-place', '--json', '--help', '-h', '--allow-dirty', '--learn', '--resume',
+]);
 const REPEATABLE_FLAGS = new Set(['--id', '--expect-fail', '--expect-pass']);
 const VALUE_FLAGS = new Set([
   '--jobs', '--base', '--file', '--anchor', '--replace', '--patch-file', ...REPEATABLE_FLAGS,
@@ -322,6 +343,17 @@ async function commandRun(flags, lists, log) {
     throw new Error('run needs either --all or at least one --id (refusing to guess which mutants you meant)');
   }
 
+  // Refused rather than silently ignoring one of the two: --allow-dirty produces
+  // non-reproducible verdicts and nothing journals them, so --resume would have
+  // nothing to reuse AND nothing to record. Saying so beats a run that quietly
+  // resumes nothing.
+  if (flags['--resume'] && flags['--allow-dirty']) {
+    throw new Error(
+      '--resume and --allow-dirty are incompatible: a --allow-dirty run\'s verdicts are '
+      + 'non-reproducible, so they are never journalled and there is nothing to resume from',
+    );
+  }
+
   const catalog = requireCatalog(repoRoot);
   const mutants = ids.length ? selectById(catalog, ids) : catalog.mutants;
 
@@ -338,11 +370,21 @@ async function commandRun(flags, lists, log) {
     checkBaseDiff: true,
     base: config.baseBranch,
     learn: Boolean(flags['--learn']),
+    resume: Boolean(flags['--resume']),
+    journalling: true,
   });
   report.command = 'run';
   report.catalog = catalog.path;
   report.resultsFile = writeResults(repoRoot, runId(), toJson(report));
   const code = emit(report, flags);
+  // Emitted on stderr regardless of --json, because --json owns stdout and this
+  // has to reach a human reading a scrollback as well as a machine reading the
+  // `resumable` field. Advisory only: no gate, no effect on `code`.
+  if (report.resumable) {
+    log(`resumable: ${report.resumable.available} verdict(s) for this exact sha and config are already `
+      + `journalled (key ${report.resumable.key}). Re-run with --resume to reuse them instead of `
+      + 're-measuring; the gates re-run either way.');
+  }
   if (!flags['--json']) log(`results: ${report.resultsFile}`);
   return code;
 }

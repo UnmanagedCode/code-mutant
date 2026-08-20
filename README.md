@@ -56,7 +56,8 @@ see [Artifact lifetime](#artifact-lifetime) below). `harness/mutation/config.jso
 | `runner` | *required* | Which output-parsing adapter to use — see [Adapters](#adapters). |
 | `isolation` | `"in-place"` | `"copy"` or `"in-place"` — see [Isolation modes](#isolation-modes). Overridable per invocation with `--copy`/`--in-place`. |
 | `preserve` | `[]` | Paths to symlink into an isolated copy rather than duplicate (e.g. `node_modules`). |
-| `timeoutMs` | `120000` | Per-*command* wall-clock cap — it applies to every command the runner measures, `setup`/`teardown` included. A hung command classifies as `TIMEOUT`, not counted as a kill. |
+| `timeoutMs` | `120000` | Per-*command* wall-clock **ceiling** — the fallback for any command with no like-for-like reference (the baseline, a narrow baseline, `setup`/`teardown`). A command killed at its deadline is never counted as a kill; which verdict it gets depends on which command hung — see the `TIMEOUT` row under [Verdicts](#verdicts). |
+| `hang` | `{factor: 10, floorMs: 10000}` | The adaptive deadline for a command that *does* have a reference — a mutant run, or a canary attempt — computed as `min(timeoutMs, max(floorMs, factor × referenceMs))`, so it is only ever tighter than `timeoutMs`, never looser. `factor: 0` disables it; `floorMs: 0` removes the floor. **The floor dominates for fast scopes:** at the defaults, any reference under 1 s yields exactly `floorMs`, so on a sub-second file scope `factor` has no effect and the deadline is a flat 10 s. Below `floorMs / factor`, tune `floorMs`, not `factor`. |
 | `jobs` | `1` | Concurrent mutants in `copy` mode — each worker owns one copy exclusively for its whole life, asserted per run (`lib/occupancy.mjs`), never merely intended. Clamped to 1 in `in-place` mode, with a note, since concurrent mutation of one tree is unsafe. `jobs > 1` also runs the *project's* suite that many times at once — see the unsafe-suite list under [Isolation modes](#isolation-modes). |
 | `baseBranch` | *unset* | The branch `run`'s empty-diff-vs-base gate compares the working tree against — normally whatever the project merges into. Unset, that gate reports `not-established` and checks nothing (see [Three trust gates](#three-trust-gates)). `--base` overrides it per invocation. |
 | `setup` / `teardown` | *unset* | Optional commands run around every measured command — the escape hatch for a DB reset, a build step, or a service that needs starting, without requiring project-local code. |
@@ -137,8 +138,8 @@ narrow to.
 | `KILLED` | Exactly the `expectFail` tests failed, and every `expectPass` test still passed. |
 | `SURVIVED` | The suite stayed green *and* the command exited 0 — the finding: the coverage claim is false. |
 | `IMPRECISE` | A compile/build break, or failures outside `expectFail` — the mutant itself is invalid (often an equivalent mutant) and needs rewriting smaller, not reporting as a finding. |
-| `TIMEOUT` | The mutation hung the suite — flagged, not counted as a kill. |
-| `ERROR` | No verdict was possible: an anchor is missing or ambiguous (a catalog stale against moved code), the replacement was a no-op, the narrowed scope was already broken or ran zero tests, the command exited non-zero without naming a failing test, or one of the three isolation-integrity checks below failed. |
+| `TIMEOUT` | The **mutant run** was killed at its deadline — flagged, not counted as a kill. The same scope completed unmutated moments earlier, so the mutation is what hung it: rewrite it smaller. (`hang.blame` is always `mutation` here.) A hung *unmutated* scope is an `ERROR`, not this — see the row below. |
+| `ERROR` | No verdict was possible: an anchor is missing or ambiguous (a catalog stale against moved code), the replacement was a no-op, the narrowed scope was already broken or ran zero tests, **the narrowed scope was killed at its deadline before any mutation was applied** (`scope-timed-out`, `hang.blame: suite` — a project defect to report upward; rewriting or dropping the mutant cannot fix it), the command exited non-zero without naming a failing test, or one of the three isolation-integrity checks below failed. An ungraded result is never shape-identical to a survivor — see [the ungraded-result shape](mutants.schema.md#the-shape-of-an-ungraded-result). |
 | `LEARNED` | `--learn` mode only: the observed failing set, reported without grading. Never produced by a graded run. |
 
 `Reason.WORKSPACE_OCCUPIED`, `Reason.WORKSPACE_RESIDUE` and `Reason.MUTATION_NOT_INTACT`
@@ -184,6 +185,11 @@ Per-review, gitignored, lives at `.mutation/mutants.json`, owned by the reviewer
 per-entry field schema is specified in [`mutants.schema.md`](mutants.schema.md) — that file is the
 authoritative format; this README only covers what the catalog is for.
 
+Alongside it, `run` appends every completed verdict to a **journal** under `.mutation/journal/`, so
+an interrupted run can be resumed with `run --resume` instead of re-measuring everything it already
+graded. Contract — which key, what invalidates it, and the two things resume never does — is in
+[`mutants.schema.md`](mutants.schema.md#resuming-a-run).
+
 A site is either an anchor + replacement (a substring swap, refused unless the anchor matches
 exactly once and the replacement isn't a no-op) or a unified `patch` applied with `git apply`, for
 structural mutations an anchor can't express (reordering two migrations, say) — that residue stays
@@ -196,6 +202,7 @@ hand-authored; the runner doesn't invent structural edits.
 | **Harness** (`harness/mutation/config.json`, its README, an optional `parse.mjs`) | Project-level — the *how*. | Yes, built once by the scaffold. |
 | **Canary** | One gate check. | No — never written to the repo. |
 | **Mutant catalog + results** (`.mutation/`) | One review loop — the *what*, for one task. | No — gitignored, dies with the worktree. |
+| **Verdict journal** (`.mutation/journal/`) | One review loop. Read only by `run --resume`. | No — gitignored, dies with the worktree. |
 
 Mutants are scaffolding: once a mutant proves a test stands, the *test* is the durable artifact and
 the mutant has done its job. Keeping a catalog past merge buys little (nothing in the workspace's
@@ -210,7 +217,7 @@ Stack-agnostic; the test command is always a shell string. Invoked directly, fro
 ```
 node mutate.mjs baseline                    [--copy|--in-place] [--allow-dirty] [--json]
 node mutate.mjs run [--id <id> ...] [--all] [--learn] [--copy|--in-place] [--jobs N]
-                    [--base <branch>] [--allow-dirty] [--json]
+                    [--base <branch>] [--allow-dirty] [--resume] [--json]
 node mutate.mjs validate                    [--json]
 node mutate.mjs probe --file <path> --anchor <text> --replace <text>
                       [--learn] [--expect-fail <test> ...] [--expect-pass <test> ...]

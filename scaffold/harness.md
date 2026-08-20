@@ -8,7 +8,7 @@ Build a project-local mutation-testing harness at `harness/mutation/`, driven by
 
 1. `harness/mutation/config.json` — required: `baselineCommand`, `testCommand` (with a `{tests}`
    placeholder), `runner`. Optional, each with a default the runner applies if you omit it:
-   `isolation`, `preserve`, `timeoutMs`, `jobs`, `baseBranch`, `setup`/`teardown` (`--help` lists
+   `isolation`, `preserve`, `timeoutMs`, `hang`, `jobs`, `baseBranch`, `setup`/`teardown` (`--help` lists
    the defaults). Base every value on this project's *real* commands (its actual `package.json`
    scripts, CI config, or whatever the test suite is actually invoked with) — don't guess or reuse
    another project's values.
