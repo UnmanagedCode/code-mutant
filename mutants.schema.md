@@ -263,10 +263,15 @@ finding can be pointed at exactly the commit it was found against.
     baseDiff:  { outcome: "passed"|"failed"|"not-established", code: "empty-diff-vs-base"|"base-unresolvable"|null,
                  base, currentBranch, mergeBase, detail },   // `run` only
     baseline: { outcome: "passed"|"failed", command, counts: {passed,failed,skipped,ran}|null, exitCode,
-                failedTests: [string]|null, detail },   // null when nothing is nameable (exit-code grade, or a
-                                                         // FAILED baseline with no parsed failure to name); [] only when green
-    canary:   { outcome, status: "KILLED"|"FAILED"|"NOT-ESTABLISHED", grade, target, detail }
+                failedTests: [string]|null, durationMs, detail },   // failedTests: null when nothing is nameable
+                                                         // (exit-code grade, or a FAILED baseline with no parsed
+                                                         // failure to name); [] only when green
+    canary:   { outcome, status: "KILLED"|"FAILED"|"NOT-ESTABLISHED", grade, target, durationMs,
+                attempts: [ { target, durationMs, why } ],   // every candidate tried and why it did not fire
+                detail }
   },
+  narrowBaselines: [ { command, green, counts, durationMs } ],   // one entry per DISTINCT narrow scope
+  timings: { totalMs, gatesMs, narrowBaselinesMs, mutantsMs },
   results: [ {
     id, invariant, whyNotEquivalent, waived,
     verdict: "KILLED"|"SURVIVED"|"IMPRECISE"|"TIMEOUT"|"ERROR"|"LEARNED",
@@ -284,7 +289,8 @@ finding can be pointed at exactly the commit it was found against.
     mutantCounts:   { passed, failed, skipped, ran },
     delta:          { passed, failed, skipped },
     canary,                       // exit-code mode only: the per-mutant gate, when one was needed
-    exitCode, durationMs
+    exitCode, durationMs,
+    applyMs, measureMs, restoreMs  // this mutant's three phases; each null for a phase that never ran
   } ],
   noTrace: { ok, before, after } | null,
   pathSetMismatches: [ … ],
@@ -296,6 +302,21 @@ finding can be pointed at exactly the commit it was found against.
 `narrowBaseline.counts` is the **same scope measured unmutated**, memoised per resolved command
 string. It exists so `delta` compares like with like: the global baseline runs the whole suite while
 a mutant runs a narrowed scope, so comparing those two would show the narrowing, not the mutation.
+
+## Where a run's wall time went
+
+Every measured command reports its own `durationMs`, and `timings` is **derived** from those — it
+sums nothing that is not also on the report, so the breakdown cannot drift from the numbers it
+sums.
+
+| Field | Covers |
+|---|---|
+| `timings.totalMs` | The whole invocation, including a run that stopped at a failed gate. |
+| `timings.gatesMs` | `gates.baseline.durationMs + gates.canary.durationMs`. The **fixed** cost — paid once per invocation regardless of mutant count. |
+| `timings.narrowBaselinesMs` | Sum of `narrowBaselines[].durationMs` — one measured command per *distinct* scope, so N mutants at one scope cost one entry. |
+| `timings.mutantsMs` | Sum of `results[].durationMs`. A **sum of per-mutant wall clocks**, so under `jobs > 1` it legitimately exceeds `totalMs`. |
+| `results[].applyMs` / `measureMs` / `restoreMs` | The harness's own snapshot+apply and restore cost, versus the project's command. Disjoint slices of that result's `durationMs`; `null` for a phase that never ran (an `ERROR` that stopped before Phase B). The remainder, when there is one, is the per-mutant exit-code canary — its own cost is on `results[].canary.durationMs`. |
+| `gates.canary.attempts[].durationMs` | Each entry is a **whole `baselineCommand` run** against a candidate that did not fire. Up to 5 candidates are tried, so a project whose early candidates sit outside its `baselineCommand`'s scope pays that multiple before the gate establishes anything. |
 
 ## Exit codes
 
