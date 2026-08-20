@@ -436,6 +436,47 @@ describe('custom adapter canary prerequisites', () => {
     } finally { repo.cleanup(); }
   });
 
+  test('the decline ceiling ends the walk, and the gate says the rest were never tried', async () => {
+    // THE SAFETY VALVE, pinned. 50 declining candidates sort ahead of the one file
+    // whose canary WOULD fire, so the ceiling is exactly what denied it -- and the
+    // detail has to say the walk was cut short, or the author reads "50 declined"
+    // as a complete census of their tree and never thinks to narrow the patterns.
+    //
+    // No command runs at all here (every attempt is a decline), and the baseline is
+    // scoped to the one real test file, so 51 candidates cost one suite run.
+    const files = guardFiles();
+    const declining = Array.from({ length: 50 }, (_, i) => `test/d${String(i).padStart(2, '0')}.test.mjs`);
+    for (const file of declining) files[file] = `// ${file}: a canary candidate, never executed\n`;
+    const repo = makeRepo({
+      files,
+      config: { runner: 'custom', isolation: 'copy', baselineCommand: "node --test 'test/guard.test.mjs'" },
+      label: 'custom-decline-ceiling',
+    });
+    write(repo.root, 'harness/mutation/parse.mjs', `
+      import { canary as nodeTestCanary } from ${JSON.stringify(NODE_TEST_MODULE)};
+      export { parse } from ${JSON.stringify(NODE_TEST_MODULE)};
+      export const testFilePatterns = ['test/**/*.test.mjs'];
+      export function canary(source, { file }) {
+        if (file === 'test/guard.test.mjs') return nodeTestCanary(source, { file });
+        return null;
+      }
+    `);
+    try {
+      const report = await run(repo, [], {}, { allowDirty: true });
+      const { canary } = report.gates;
+      assert.equal(canary.status, CanaryStatus.FAILED);
+      assert.equal(canary.attempts.length, 50, 'the walk stops AT the ceiling, not one past it');
+      assert.deepEqual(canary.attempts.map((a) => a.target), declining);
+      assert.equal(canary.target, null, 'no command ran, so there is no file to name');
+      assert.match(canary.detail, /No candidate was ever injected into/);
+      assert.match(canary.detail, /50 candidates were declined/);
+      assert.match(canary.detail, /test\/d00\.test\.mjs, test\/d01\.test\.mjs, test\/d02\.test\.mjs, \.\.\./);
+      assert.match(canary.detail, /Stopped after 50 of 51 candidates/);
+      assert.match(canary.detail, /narrow testFilePatterns/);
+      assert.equal(exitCodeFor(report), ExitCode.GATE_FAILED);
+    } finally { repo.cleanup(); }
+  });
+
   test('a FAILED gate names where a command actually ran, never a declined candidate', async () => {
     // The report renders `target` as "via <file>", which must not point at a file
     // nothing was ever injected into. Sorted order puts the decline LAST here, so
@@ -460,7 +501,8 @@ describe('custom adapter canary prerequisites', () => {
       assert.equal(canary.attempts.at(-1).target, 'test/zzz.test.mjs', 'the decline is the last attempt');
       assert.equal(canary.attempts.at(-1).durationMs, 0);
       assert.equal(canary.target, 'test/guard.test.mjs', 'the last MEASURED candidate, not the decline');
-      assert.match(canary.detail, /1 candidate\(s\) were declined/);
+      assert.match(canary.detail, /1 candidate was declined/);
+      assert.doesNotMatch(canary.detail, /Stopped after/, 'every candidate was tried here');
       assert.equal(exitCodeFor(report), ExitCode.GATE_FAILED);
     } finally { repo.cleanup(); }
   });

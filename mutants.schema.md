@@ -529,9 +529,9 @@ for any target file, so the gate can never be established in any repo state. Eve
 before any tree copy, with a `FAILED` canary gate and exit `2`; `validate` reports it as the
 `adapter-no-canary` problem. It must return `{ content, testId, matches(failure) }`, or `null` to
 decline **that file**, which is legal: the next candidate is tried, each decline recorded as an
-attempt carrying `durationMs: 0` (a decline runs no command, so it is not charged to the 5-measured-
-candidate budget; the walk stops after 50 declines), and the gate fails only when no candidate
-establishes it.
+attempt carrying `durationMs: 0` (a decline runs no command, so it is not charged to the budget of 5
+measured candidates; the walk stops after 50 declines), and the gate fails only when no candidate
+establishes it. When either cap cuts the walk short, the gate's `detail` says so.
 
 Other optional exports, each with a safe default if omitted: `scopeOf(ref)` (default: the file part),
 `substitute({scopes, refs, mode})` (default: space-joined quoted paths), `canNameFilter` (default

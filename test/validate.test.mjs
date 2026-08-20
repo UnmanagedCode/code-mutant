@@ -451,6 +451,28 @@ describe('validate reports the adapter-level canary prerequisites', () => {
     } finally { repo.cleanup(); }
   });
 
+  test('the problem names a malformed grade instead of calling it counted', async () => {
+    // The gate's twin message is pinned in test/gates.test.mjs; this is the other
+    // direction. Both are generated from describeGrade() so they cannot drift, and
+    // "is counted grade" about an adapter declaring `grade = "Counted"` would send
+    // the reader past the typo that is the actual bug. loadAdapter normalises its
+    // own grades, so a direct call is the only way to reach this.
+    const repo = makeRepo({ files: guardFiles(), mutants: [GOOD], label: 'validate-bad-grade' });
+    try {
+      const base = await loadAdapter('node-test', { configDir: path.join(repo.root, 'harness', 'mutation') });
+      const report = validateCatalog({
+        repoRoot: repo.root,
+        config: { testCommand: 'node --test {tests}' },
+        adapter: { ...base, name: 'hand-built', grade: 'Counted', canary: null },
+        catalog: { path: '.mutation/mutants.json', mutants: [] },
+      });
+      const issue = report.issues.find((i) => i.code === 'adapter-no-canary');
+      assert.ok(issue, 'expected an adapter-no-canary issue');
+      assert.match(issue.detail, /runs at grade "Counted", which is not a grade the runner knows/);
+      assert.doesNotMatch(issue.detail, /runs at counted grade/);
+    } finally { repo.cleanup(); }
+  });
+
   test('a git failure is not reported as "your patterns match nothing"', async () => {
     // `trackedFiles` swallows a git failure -- ENOBUFS on a monorepo past
     // execFileSync's buffer, or no repo at all -- and returns no candidates. The
