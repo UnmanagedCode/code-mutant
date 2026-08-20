@@ -134,6 +134,7 @@ before the run):
 | `patch-unparseable` / `patch-rejected` | git could not read the patch, or it does not apply. |
 | `scope-non-green` | The narrowed scope was already failing, or exited non-zero, before any mutation. |
 | `scope-timed-out` | The narrowed scope was killed at its deadline **before any mutation** — `hang.blame: "suite"`, a project defect rather than a mutant to rewrite. |
+| `output-incomplete` | The command exited but its output streams were still open when the drain grace expired, so something else was holding them and the capture may be short. Treated exactly as `output-truncated`: never `SURVIVED`. |
 | `scope-empty` | The narrowed scope ran **zero tests**. Never reported as `SURVIVED`. |
 | `unexplained-exit` | Counted mode: the command exited non-zero while naming **no failing test** — something the adapter cannot see went wrong, so the run is not observably green. Never reported as `SURVIVED`. |
 | `canary-not-established` | Exit-code mode: the gate could not be shown to observe a deliberate break in the mutated file, so its "survivor" means nothing. |
