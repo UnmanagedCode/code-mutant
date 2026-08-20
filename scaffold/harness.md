@@ -32,7 +32,10 @@ Build a project-local mutation-testing harness at `harness/mutation/`, driven by
      fits, and write a `custom` parser instead if it disagrees.
    - Nothing matches — write the `custom` parser. That is the intended path, not a last resort:
      `harness/mutation/parse.mjs` (that exact filename, beside `config.json`) exporting
-     `parse(stdout, stderr, exitCode)`. Prove it against the captured output before finishing.
+     `parse(stdout, stderr, exitCode)` — **plus `testFilePatterns` and `canary`**, which default to
+     nothing and make the canary gate fail every run rather than pass silently. Full export
+     contract: `code-mutant`'s `mutants.schema.md` Appendix B. Prove it against the captured output
+     before finishing.
 
    A counted-grade command must exit 0 whenever no test failed: one that chains a lint or guardrail
    step exiting non-zero on its own fails the baseline gate (`outcome: "failed"`), so scope
@@ -41,13 +44,23 @@ Build a project-local mutation-testing harness at `harness/mutation/`, driven by
    whatever its real integration branch is). Left unset, `run`'s empty-diff-vs-base gate reports
    `not-established` and checks nothing, so a review of a branch with no committed work would read
    as a clean sweep.
-5. Write `harness/mutation/README.md` documenting how to invoke the harness for *this* project.
+5. **Scope `baselineCommand` across the project's test files, not one subdirectory.** The canary
+   gate injects a guaranteed-failing test into tracked files matching the adapter's
+   `testFilePatterns`, tried in sorted order; if the first few sit outside `baselineCommand`'s scope
+   it burns a baseline run per attempt and then fails the gate. A repo whose alphabetically-first
+   test files live outside the suite you'd normally run is the case to watch.
+6. Write `harness/mutation/README.md` documenting how to invoke the harness for *this* project.
    Command syntax and flags are `mutate.mjs`'s own CLI, so read it directly (`--help` or its
    source) rather than copying examples from another project's harness, which can drift. Call
    nothing in it verified unless you ran it in this project — name the command and what it
    produced, or don't make the claim.
-6. Add `.mutation/` to this project's `.gitignore` (per the workspace git-hygiene convention —
+7. Add `.mutation/` to this project's `.gitignore` (per the workspace git-hygiene convention —
    verify the pattern actually matches via `git status` before the first commit that touches it).
+8. **Verify by running it before you finish.** `node <path>/mutate.mjs baseline` must report the
+   baseline `passed` **and** the canary `KILLED`; the one exception is an `exit-code`-grade harness,
+   which has no named test to inject and reports `not-established`. Files existing is not "done" —
+   fix `config.json` (or the parser) until the gates read that way, and record the numbers in the
+   README per step 6.
 
 ## What NOT to do
 

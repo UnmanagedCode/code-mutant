@@ -5,7 +5,9 @@ mechanical half of **mutation-verified coverage proving** — an established, pr
 by-hand practice in this workspace: revert a fix in an isolated copy, confirm the test that claims
 to cover it actually fails, and treat "passes either way" as proof the claim is false. The plugin
 turns the by-hand parts (anchoring an edit, applying it, running the suite, parsing the output,
-restoring the file, re-running prior rounds' mutants) into one shared runner. The judgment half —
+restoring the file, re-running prior rounds' mutants) into one shared runner, and retires the
+by-hand version: a reviewer with no harness reports the absence and proceeds, it never re-improvises
+the mechanics. The judgment half —
 which invariant is worth attacking, whether a survivor blocks landing — stays with the agents.
 
 **Division of labour:** the **reviewer** authors and runs every mutant against the **implementer**'s
@@ -29,7 +31,7 @@ Contributions-only — no backend, no frontend, no MCP server. Enabling it never
   neither a mutant catalog nor a canary — both are per-review/per-run.
 - **`demand-mutation-verified`** (`scope: "conductor"`) — the plugin's only prompt fragment. Briefs
   the conductor to have the reviewer mutation-prove coverage claims via `/code-mutant:prove` rather
-  than trust the implementer's report, and to handle the case where a project has no harness yet.
+  than trust the implementer's report, and to treat a project with no harness as configured for none.
 - **`claudePlugin: "."`** — this project root doubles as the Claude Code plugin root, so
   `skills/prove/SKILL.md` resolves as `/code-mutant:prove` for every worker, whether or not the
   project it's invoked in was ever scaffolded.
@@ -263,8 +265,8 @@ subcommand is *for*.
 machine report on stdout instead of the printed matrix; either way `run` and `probe` always write
 the same object to `.mutation/results/<runId>.json`, and refuse outright if `.mutation/` isn't
 gitignored. Exit code is non-zero whenever any un-waived mutant survived — a signal a conductor can
-gate on, unlike a self-reported reviewer verdict — and distinguishes a failed gate and a
-no-verdict run from a clean sweep; the full table is in
+gate on, unlike a self-reported reviewer verdict — and distinguishes a failed gate, a no-verdict
+run, and an unconfigured project from a clean sweep; the full table is in
 [`mutants.schema.md`](mutants.schema.md#exit-codes).
 
 A scaffolded project documents how to invoke the harness for itself in its own

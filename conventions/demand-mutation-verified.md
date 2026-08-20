@@ -24,6 +24,7 @@ mutation-prove a "covered" claim before anyone trusts it.
   salvaging its work. A hang the runner blames on the suite is a project defect to route to the
   implementer, not a mutant for the reviewer to rewrite; the reviewer's side is
   `/code-mutant:prove` step 7.
-- **Handle the no-harness case** — brief a bootstrap worker from `code-mutant`'s
-  `scaffold/harness.md`, or proceed the review without mutation proof; a missing harness is a gap
-  to fill or knowingly skip, not a blocking error.
+- **A project with no `harness/mutation/config.json` is configured for no mutation testing** — the
+  reviewer notes it and the review proceeds without mutation proof; never brief a bootstrap or a
+  by-hand mutation into a review, since opting a project in is separate owner-directed work against
+  `code-mutant`'s `scaffold/harness.md`.

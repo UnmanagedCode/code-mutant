@@ -448,8 +448,13 @@ a refusal, never a gate, no effect on the exit code.
 | 3 | Restore or the clean-tree assertion failed — inspect the tree by hand. |
 | 4 | Usage, config, or catalog error. |
 | 5 | No survivors, but some mutant produced **no verdict** (`ERROR`/`TIMEOUT`) — not a clean proof. |
+| 6 | No `harness/mutation/config.json`: this project is not configured for mutation testing. Nothing ran and nothing is claimed. **Not an error** — the notice goes to stdout, `stderr` stays empty, and `--json` gets the same plain text (there is no report object to shape). |
 
 Code 5 exists so a catalog whose mutants all fail to resolve cannot read as "0 survivors, clean".
+
+Code 6 is deliberately non-zero rather than 0: exit 0 means "gates passed, no survivors", so a
+project with no harness must not land there. It is also not 4 — an absent harness is a supported
+configuration, not a config error.
 
 A learn run's exit 0 means discovery completed, never that coverage was proven — check the report's
 `learn` flag before reading an exit code from a `--learn` invocation as a clean sweep.

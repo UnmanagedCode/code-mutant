@@ -22,7 +22,7 @@ import { listCandidates } from './lib/candidates.mjs';
 import {
   CatalogError, assertMutationDirIgnored, loadCatalog, requireCatalog, selectById, writeResults,
 } from './lib/catalog.mjs';
-import { ConfigError, loadConfig } from './lib/config.mjs';
+import { ConfigError, NoHarnessError, loadConfig } from './lib/config.mjs';
 import { checkCleanTree } from './lib/gates.mjs';
 import { installGuard } from './lib/guard.mjs';
 import { EXIT_CODE_MEANINGS, ExitCode, exitCodeFor, formatReport, toJson } from './lib/report.mjs';
@@ -584,6 +584,12 @@ export async function main(argv) {
         return ExitCode.USAGE;
     }
   } catch (err) {
+    // Not a failure: a project without a harness is configured for none. stdout,
+    // no error prefix, and its own code -- exit 0 would read as a clean sweep.
+    if (err instanceof NoHarnessError) {
+      process.stdout.write(`${err.message}\n`);
+      return ExitCode.NO_HARNESS;
+    }
     process.stderr.write(`code-mutant: ${err.message}\n`);
     if (err.stack && process.env.CODE_MUTANT_DEBUG) process.stderr.write(`${err.stack}\n`);
     // A restore or byte-identity failure is its own exit code, because it means
