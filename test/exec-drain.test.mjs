@@ -88,6 +88,58 @@ describe('a command that exited but leaked a pipe holder', () => {
     assert.notEqual(classification.verdict, Verdict.SURVIVED);
   });
 
+  test('7e: NO GRADE IS EXEMPT -- an under-captured exit-code run is ERROR, not a verdict', () => {
+    // Claim 7b exercises only the COUNTED grade, so it survives the check being
+    // moved below the exit-code grade split. It must not be: the exit-code branch
+    // returns a verdict from the exit status alone, so an under-captured run
+    // reaching it produces SURVIVED at exit 0 (a false finding -- the direction
+    // this tool must never get wrong) or KILLED at non-zero (a fake-clean sweep).
+    //
+    // Reachable in production via an `exit-code` adapter and via the per-mutant
+    // canary (lib/mutant-run.mjs). Pinned as a pure call for the same reason the
+    // `truncated` counterpart is (test/classify.test.mjs, "a truncated
+    // exit-code-mode capture is ERROR too -- no grade is exempt"): this is a
+    // branch-ORDER property, and ordering is what a pure call pins exactly.
+    const exitCodeParsed = { grade: 'exit-code', failedTests: [], compileError: false, ran: null };
+    const rows = [
+      { why: 'exit 0 would otherwise read SURVIVED -- a false finding', exitCode: 0 },
+      { why: 'exit 1 would otherwise read KILLED -- a fake-clean sweep', exitCode: 1 },
+    ];
+
+    for (const row of rows) {
+      const result = classify({
+        run: {
+          exitCode: row.exitCode,
+          timedOut: false,
+          spawnError: null,
+          truncated: false,
+          outputIncomplete: true,
+          durationMs: 5,
+        },
+        parsed: exitCodeParsed,
+        expectFail: ['test/a.test.mjs::one'],
+      });
+
+      assert.equal(result.verdict, Verdict.ERROR, row.why);
+      assert.equal(result.reason, Reason.OUTPUT_INCOMPLETE, row.why);
+      assert.notEqual(result.verdict, Verdict.SURVIVED, row.why);
+      assert.notEqual(result.verdict, Verdict.KILLED, row.why);
+    }
+
+    // The control: the same grade, same exit codes, capture intact -> the ordinary
+    // exit-code verdicts. Without this the assertions above would also pass if
+    // exit-code mode had simply stopped producing verdicts at all.
+    const intact = (exitCode) => classify({
+      run: {
+        exitCode, timedOut: false, spawnError: null, truncated: false, outputIncomplete: false, durationMs: 5,
+      },
+      parsed: exitCodeParsed,
+      expectFail: ['test/a.test.mjs::one'],
+    }).verdict;
+    assert.equal(intact(0), Verdict.SURVIVED);
+    assert.equal(intact(1), Verdict.KILLED);
+  });
+
   test('7d: a high-volume run drains fully and is never flagged', async () => {
     // The specific risk in settling on `exit`: a legitimately slow-draining run
     // reading as incomplete. Structurally it cannot -- once the child has exited

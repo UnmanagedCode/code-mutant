@@ -22,6 +22,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { loadAdapter } from '../lib/adapters/index.mjs';
+import { loadConfig } from '../lib/config.mjs';
+import { execute } from '../lib/runner.mjs';
 import { Verdict } from '../lib/classify.mjs';
 import { git, makeRepo, write } from './helpers/tmp-repo.mjs';
 import { childEnv, RUNNER, runCli } from './helpers/cli.mjs';
@@ -279,6 +282,89 @@ describe('resuming an interrupted run', () => {
       assert.equal(second.report.summary.waivedSurvivors, 1);
       assert.equal(second.report.summary.survivors, 0);
       assert.equal(second.exitCode, 0, 'a waived survivor does not block');
+    } finally { repo.cleanup(); }
+  });
+
+  test('18: a verdict earned under one --jobs value is never reused under another', async () => {
+    // Deliberate, per the plan: reusing a jobs=4 verdict inside a jobs=1 re-run
+    // would hide precisely the concurrent-suite hazard the README tells a reader
+    // to check for -- a fixed port, a shared temp dir, a shared DB. The whole
+    // point of re-running serially is to get a verdict that did NOT come from a
+    // concurrent run, so handing back the concurrent one defeats the exercise.
+    //
+    // Copy isolation throughout, because jobs > 1 is clamped to 1 in-place, which
+    // would make the two runs share a key legitimately and the test vacuous.
+    const repo = makeRepo({
+      files: costFiles({ modules: 4, workIterations: 0 }),
+      config: costConfig(),
+      label: 'resume-jobs',
+    });
+    try {
+      writeCatalog(repo, costMutants(2));
+
+      const first = await runJson(repo, ['run', '--all', '--json']);
+      assert.equal(first.exitCode, 0, first.stderr);
+      assert.equal(first.report.jobs, 1);
+
+      // CONTROL, in the same jobs value: reuse does happen here, so a failure
+      // below is about `jobs` and not about resume being broken outright.
+      const sameJobs = await runJson(repo, ['run', '--all', '--resume', '--json']);
+      assert.equal(sameJobs.report.jobs, 1);
+      assert.equal(sameJobs.report.resumed.reused, 2, 'the control must reuse, or claim 18 proves nothing');
+
+      // THE INVARIANT: a different jobs value is a different key.
+      const otherJobs = await runJson(repo, ['run', '--all', '--resume', '--jobs', '2', '--json']);
+      assert.equal(otherJobs.report.jobs, 2, 'the fixture must actually have changed jobs');
+      assert.equal(otherJobs.report.resumed.reused, 0, 'a jobs=1 verdict must not be reused at jobs=2');
+      assert.equal(otherJobs.report.resumed.ran, 2);
+      for (const r of otherJobs.report.results) assert.equal(r.fromJournal, false);
+      // Different key means a separate journal file, not an appended one.
+      assert.equal(journalFiles(repo).length, 2);
+    } finally { repo.cleanup(); }
+  });
+
+  test('19: retuning the hang deadline invalidates verdicts earned under the old one', async () => {
+    // A verdict produced under one deadline says nothing under another: the point
+    // of retuning is to change what gets killed, so resurrecting a TIMEOUT the old
+    // deadline produced would silently defeat the retune. And tuning the deadline
+    // between an interrupted run and its resume is the EXPECTED case -- it is what
+    // this feature is for -- not an exotic one.
+    //
+    // Driven through execute() rather than the CLI on purpose: config.json is
+    // committed, so editing it on disk would either dirty the tree (failing the
+    // clean-tree gate) or need a commit (changing mutatedSha, which invalidates
+    // the key on its own and would pass this test for the wrong reason). In
+    // process, `hang` is the ONLY variable that moves.
+    const repo = makeRepo({
+      files: costFiles({ modules: 4, workIterations: 0 }),
+      config: costConfig(),
+      label: 'resume-hang-key',
+    });
+    try {
+      const mutants = costMutants(2);
+      const config = loadConfig({ repoRoot: repo.root });
+      const adapter = await loadAdapter(config.runner, { configDir: config.configDir });
+      const run = (overrides, resume) => execute({
+        config: { ...config, ...overrides }, adapter, mutants, journalling: true, resume,
+      });
+
+      const first = await run({}, false);
+      assert.equal(first.results.length, 2);
+      const sha = first.mutatedSha;
+
+      // CONTROL: same config, so the verdicts come back.
+      const same = await run({}, true);
+      assert.equal(same.resumed.reused, 2, 'the control must reuse, or claim 19 proves nothing');
+
+      // THE INVARIANT: floorMs halved is a real change to the derived deadline
+      // (these scopes are fast, so the floor is what binds -- see the README's
+      // `hang` row), and no verdict earned under the old floor is reused.
+      const retuned = await run({ hang: { factor: config.hang.factor, floorMs: 5000 } }, true);
+      assert.equal(retuned.mutatedSha, sha, 'the sha must be unchanged, or this proves nothing');
+      assert.equal(retuned.resumed.reused, 0, 'a verdict earned under the old deadline must not be reused');
+      assert.equal(retuned.resumed.ran, 2);
+      for (const r of retuned.results) assert.equal(r.fromJournal, false);
+      assert.equal(journalFiles(repo).length, 2, 'a retune writes its own journal, it does not append');
     } finally { repo.cleanup(); }
   });
 

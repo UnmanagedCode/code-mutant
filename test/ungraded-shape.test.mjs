@@ -13,6 +13,10 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { loadAdapter } from '../lib/adapters/index.mjs';
 import { loadConfig } from '../lib/config.mjs';
@@ -21,8 +25,10 @@ import {
   GRADED_REASONS, Reason, UNGRADED_REASONS, Verdict, isGraded,
 } from '../lib/classify.mjs';
 import { toJson } from '../lib/report.mjs';
-import { makeRepo } from './helpers/tmp-repo.mjs';
+import { guardFiles, makeRepo } from './helpers/tmp-repo.mjs';
 import { costConfig, costFiles, costMutants } from './helpers/cost-project.mjs';
+
+const STAGED = path.join(path.dirname(fileURLToPath(import.meta.url)), 'helpers', 'staged-command.mjs');
 
 describe('ungraded results are distinguishable from survivors', () => {
   test('8: the reason partition is total over Reason and disjoint', () => {
@@ -117,6 +123,77 @@ describe('ungraded results are distinguishable from survivors', () => {
       assert.equal(ungraded.missingFailures, null);
       assert.deepEqual(survivor.unexpectedFailures, []);
     } finally { repo.cleanup(); }
+  });
+
+  test('9b: a MEASURED ungraded result carries null too, not just a refused one', async () => {
+    // Claim 9 covers the errorResult path (lib/mutant-run.mjs's stale-anchor
+    // case), and claim 10 hand-builds a TIMEOUT. Neither reaches the branch a
+    // REAL hang takes: the measured path, where a classification comes back
+    // ungraded and the result is assembled from it. That is the common case, and
+    // with `[]` there a measured hang is byte-identical to a SURVIVED at exactly
+    // the field the 2026-0183 phantom-regression classifier keyed on.
+    //
+    // Driven through a genuine timeout rather than a hand-built object, so the
+    // value asserted is the one the runner actually produced.
+    const scratch = mkdtempSync(path.join(os.tmpdir(), 'code-mutant-ungraded-'));
+    const repo = makeRepo({
+      files: guardFiles(),
+      config: {
+        baselineCommand: 'node --test',
+        testCommand: `node ${JSON.stringify(STAGED)} {tests}`,
+        isolation: 'copy',
+        timeoutMs: 60_000,
+        // Invocation 1 (the narrow baseline) returns green in ~50ms; invocation 2
+        // (the mutant run) blocks forever, so the deadline is what ends it.
+        hang: { factor: 4, floorMs: 0 },
+      },
+      label: 'ungraded-measured',
+    });
+    const previous = process.env.CM_FAKE_STATE;
+    const previousBlock = process.env.CM_FAKE_BLOCK_ON;
+    try {
+      process.env.CM_FAKE_STATE = path.join(scratch, 'invocations');
+      process.env.CM_FAKE_BLOCK_ON = '2';
+      const config = loadConfig({ repoRoot: repo.root });
+      const adapter = await loadAdapter(config.runner, { configDir: config.configDir });
+      // `await` inside the try: an async function's `finally` runs before an
+      // un-awaited returned promise settles, which would strip the env first.
+      const report = await execute({
+        config,
+        adapter,
+        mutants: [{
+          id: 'hangs',
+          invariant: 'the user-defined-backend branch is load-bearing',
+          sites: [{ file: 'src/guard.mjs', anchor: "return kind === 'user-defined';", replacement: 'return false;' }],
+          expectFail: ['test/guard.test.mjs::allows user-defined backends'],
+          expectPass: [],
+          whyNotEquivalent: 'denies a backend the guard must admit',
+        }],
+      });
+      const result = report.results[0];
+
+      // It really was MEASURED -- it reached Phase B and was classified, rather
+      // than refused before any command ran. Without this the assertions below
+      // would also pass on the errorResult path claim 9 already covers.
+      assert.equal(result.verdict, Verdict.TIMEOUT, result.detail);
+      assert.equal(typeof result.measureMs, 'number', 'a refused mutant would have measureMs null');
+      assert.ok(result.narrowBaseline.green, 'the scope was measured green before the mutation');
+
+      // THE INVARIANT: null, never []. `[]` is a measurement ("nothing failed");
+      // this run measured nothing it could name.
+      assert.equal(result.failedTests, null, 'a measured ungraded result must not carry []');
+      assert.equal(result.unexpectedFailures, null);
+      assert.equal(result.missingFailures, null);
+      assert.notDeepEqual(result.failedTests, [], 'the exact value a SURVIVED carries');
+      assert.equal(toJson(report).results[0].graded, false);
+    } finally {
+      if (previous === undefined) delete process.env.CM_FAKE_STATE;
+      else process.env.CM_FAKE_STATE = previous;
+      if (previousBlock === undefined) delete process.env.CM_FAKE_BLOCK_ON;
+      else process.env.CM_FAKE_BLOCK_ON = previousBlock;
+      repo.cleanup();
+      rmSync(scratch, { recursive: true, force: true });
+    }
   });
 
   test('10: a TIMEOUT is ungraded too, and is counted as a timeout rather than a kill', () => {
