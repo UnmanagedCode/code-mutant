@@ -116,7 +116,10 @@ VERDICTS
   IMPRECISE  A compile/build break, or failures outside expectFail. The mutant
              itself is invalid (often an equivalent mutant); rewrite it smaller
              rather than reporting it.
-  TIMEOUT    The mutation hung the suite. Flagged, never counted as a kill.
+  TIMEOUT    A measured command was killed at its deadline. Flagged, never
+             counted as a kill. hang.blame says which side to fix:
+             "mutation" (rewrite it smaller) or "suite" (the UNMUTATED scope
+             did not terminate -- a project defect, not a mutant problem).
   ERROR      No verdict was possible: an anchor is missing or ambiguous, the
              replacement was a no-op, the narrowed scope was already broken or
              ran zero tests, or the command exited non-zero without naming a
@@ -169,7 +172,13 @@ config.json (harness/mutation/config.json)
   isolation        "in-place" (default) or "copy".
   preserve         Paths symlinked into a copy instead of duplicated, e.g.
                    ["node_modules"].
-  timeoutMs        Per-command wall-clock cap. Default 120000.
+  timeoutMs        Per-command wall-clock ceiling, and the fallback for any
+                   command with no unmutated reference. Default 120000.
+  hang             {factor, floorMs} -- the adaptive deadline for a command
+                   that HAS a reference (a mutant run, a canary attempt):
+                   min(timeoutMs, max(floorMs, factor * referenceMs)), so
+                   only ever tighter than timeoutMs. Default
+                   {factor: 10, floorMs: 10000}. factor 0 disables it.
   jobs             Copy-mode concurrency. Default 1. See --jobs above for what
                    makes a suite unsafe to run concurrently.
   baseBranch       Optional. run's empty-diff-vs-base gate compares against

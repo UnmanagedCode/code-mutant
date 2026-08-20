@@ -56,7 +56,8 @@ see [Artifact lifetime](#artifact-lifetime) below). `harness/mutation/config.jso
 | `runner` | *required* | Which output-parsing adapter to use — see [Adapters](#adapters). |
 | `isolation` | `"in-place"` | `"copy"` or `"in-place"` — see [Isolation modes](#isolation-modes). Overridable per invocation with `--copy`/`--in-place`. |
 | `preserve` | `[]` | Paths to symlink into an isolated copy rather than duplicate (e.g. `node_modules`). |
-| `timeoutMs` | `120000` | Per-*command* wall-clock cap — it applies to every command the runner measures, `setup`/`teardown` included. A hung command classifies as `TIMEOUT`, not counted as a kill. |
+| `timeoutMs` | `120000` | Per-*command* wall-clock **ceiling** — the fallback for any command with no like-for-like reference (the baseline, a narrow baseline, `setup`/`teardown`). A hung command classifies as `TIMEOUT`, not counted as a kill. |
+| `hang` | `{factor: 10, floorMs: 10000}` | The adaptive deadline for a command that *does* have a reference — a mutant run, or a canary attempt — computed as `min(timeoutMs, max(floorMs, factor × referenceMs))`, so it is only ever tighter than `timeoutMs`, never looser. `factor: 0` disables it; `floorMs: 0` removes the floor. **The floor dominates for fast scopes:** at the defaults, any reference under 1 s yields exactly `floorMs`, so on a sub-second file scope `factor` has no effect and the deadline is a flat 10 s. Below `floorMs / factor`, tune `floorMs`, not `factor`. |
 | `jobs` | `1` | Concurrent mutants in `copy` mode — each worker owns one copy exclusively for its whole life, asserted per run (`lib/occupancy.mjs`), never merely intended. Clamped to 1 in `in-place` mode, with a note, since concurrent mutation of one tree is unsafe. `jobs > 1` also runs the *project's* suite that many times at once — see the unsafe-suite list under [Isolation modes](#isolation-modes). |
 | `baseBranch` | *unset* | The branch `run`'s empty-diff-vs-base gate compares the working tree against — normally whatever the project merges into. Unset, that gate reports `not-established` and checks nothing (see [Three trust gates](#three-trust-gates)). `--base` overrides it per invocation. |
 | `setup` / `teardown` | *unset* | Optional commands run around every measured command — the escape hatch for a DB reset, a build step, or a service that needs starting, without requiring project-local code. |
@@ -137,7 +138,7 @@ narrow to.
 | `KILLED` | Exactly the `expectFail` tests failed, and every `expectPass` test still passed. |
 | `SURVIVED` | The suite stayed green *and* the command exited 0 — the finding: the coverage claim is false. |
 | `IMPRECISE` | A compile/build break, or failures outside `expectFail` — the mutant itself is invalid (often an equivalent mutant) and needs rewriting smaller, not reporting as a finding. |
-| `TIMEOUT` | The mutation hung the suite — flagged, not counted as a kill. |
+| `TIMEOUT` | A measured command was killed at its deadline — flagged, not counted as a kill. The result's `hang.blame` says which side to fix: `mutation` (the same scope completed unmutated, so rewrite the mutant smaller) or `suite` (the *unmutated* scope did not terminate — a project defect, and rewriting the mutant cannot fix it). |
 | `ERROR` | No verdict was possible: an anchor is missing or ambiguous (a catalog stale against moved code), the replacement was a no-op, the narrowed scope was already broken or ran zero tests, the command exited non-zero without naming a failing test, or one of the three isolation-integrity checks below failed. |
 | `LEARNED` | `--learn` mode only: the observed failing set, reported without grading. Never produced by a graded run. |
 

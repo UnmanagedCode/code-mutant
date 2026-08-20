@@ -133,6 +133,7 @@ before the run):
 | `mixed-site-forms` | An anchor site and a patch site of one mutant touch the same file. |
 | `patch-unparseable` / `patch-rejected` | git could not read the patch, or it does not apply. |
 | `scope-non-green` | The narrowed scope was already failing, or exited non-zero, before any mutation. |
+| `scope-timed-out` | The narrowed scope was killed at its deadline **before any mutation** — `hang.blame: "suite"`, a project defect rather than a mutant to rewrite. |
 | `scope-empty` | The narrowed scope ran **zero tests**. Never reported as `SURVIVED`. |
 | `unexplained-exit` | Counted mode: the command exited non-zero while naming **no failing test** — something the adapter cannot see went wrong, so the run is not observably green. Never reported as `SURVIVED`. |
 | `canary-not-established` | Exit-code mode: the gate could not be shown to observe a deliberate break in the mutated file, so its "survivor" means nothing. |
@@ -263,7 +264,7 @@ finding can be pointed at exactly the commit it was found against.
     baseDiff:  { outcome: "passed"|"failed"|"not-established", code: "empty-diff-vs-base"|"base-unresolvable"|null,
                  base, currentBranch, mergeBase, detail },   // `run` only
     baseline: { outcome: "passed"|"failed", command, counts: {passed,failed,skipped,ran}|null, exitCode,
-                failedTests: [string]|null, durationMs, detail },   // failedTests: null when nothing is nameable
+                failedTests: [string]|null, durationMs, timedOut, detail },   // failedTests: null when nothing is nameable
                                                          // (exit-code grade, or a FAILED baseline with no parsed
                                                          // failure to name); [] only when green
     canary:   { outcome, status: "KILLED"|"FAILED"|"NOT-ESTABLISHED", grade, target, durationMs,
@@ -290,11 +291,14 @@ finding can be pointed at exactly the commit it was found against.
     delta:          { passed, failed, skipped },
     canary,                       // exit-code mode only: the per-mutant gate, when one was needed
     exitCode, durationMs,
-    applyMs, measureMs, restoreMs  // this mutant's three phases; each null for a phase that never ran
+    applyMs, measureMs, restoreMs,  // this mutant's three phases; each null for a phase that never ran
+    deadlineMs,                     // the wall-clock cap this mutant's command actually got
+    hang: { blame: "mutation"|"suite", deadlineMs, referenceMs } | null   // non-null ONLY on a deadline kill
   } ],
   noTrace: { ok, before, after } | null,
   pathSetMismatches: [ … ],
-  summary: { total, open, waived, survivors, waivedSurvivors, noVerdict, killed, imprecise, learned },
+  summary: { total, open, waived, survivors, waivedSurvivors, noVerdict, errored, timedOut,
+             killed, imprecise, learned },   // errored + timedOut === noVerdict
   exitCode: number
 }
 ```
@@ -317,6 +321,34 @@ sums.
 | `timings.mutantsMs` | Sum of `results[].durationMs`. A **sum of per-mutant wall clocks**, so under `jobs > 1` it legitimately exceeds `totalMs`. |
 | `results[].applyMs` / `measureMs` / `restoreMs` | The harness's own snapshot+apply and restore cost, versus the project's command. Disjoint slices of that result's `durationMs`; `null` for a phase that never ran (an `ERROR` that stopped before Phase B). The remainder, when there is one, is the per-mutant exit-code canary — its own cost is on `results[].canary.durationMs`. |
 | `gates.canary.attempts[].durationMs` | Each entry is a **whole `baselineCommand` run** against a candidate that did not fire. Up to 5 candidates are tried, so a project whose early candidates sit outside its `baselineCommand`'s scope pays that multiple before the gate establishes anything. |
+
+## Deadlines and hang blame
+
+`timeoutMs` is the **ceiling**. A measured command that has a **like-for-like unmutated reference**
+gets a tighter deadline derived from it instead; only a command with no reference falls back to the
+ceiling. `results[].deadlineMs` is what the command actually got.
+
+| Command | Reference | Deadline |
+|---|---|---|
+| global baseline | none | `timeoutMs` |
+| narrow baseline | none | `timeoutMs` |
+| canary attempt (`scope: 'baseline'`) | the global baseline's `durationMs` — same command | derived |
+| mutant run | that scope's narrow-baseline `durationMs` — same command | derived |
+| per-mutant canary (`scope: 'mutant'`) | that scope's narrow-baseline `durationMs` | derived |
+| `setup` / `teardown` hooks | none | `timeoutMs` |
+
+Derivation and the `hang` config key are documented once, in the README's config table.
+
+`hang` is non-null **only** when a command was killed at its deadline, and `blame` is sound without
+any extra run:
+
+- **`mutation`** — the mutant run was killed. Reaching it required the *same command* to have been
+  measured unmutated and green, so the only thing that changed is the mutation. Verdict `TIMEOUT`.
+- **`suite`** — the **narrow baseline itself** was killed, before any mutation was applied. Verdict
+  `ERROR` with reason `scope-timed-out` (never `TIMEOUT`: a mutation that was never measured cannot
+  be blamed), and `referenceMs` is `null` because a narrow baseline has none.
+
+`gates.baseline.timedOut` is the same signal one level up, for a hang at the gate.
 
 ## Exit codes
 

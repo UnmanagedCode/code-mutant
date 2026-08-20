@@ -1,15 +1,22 @@
 // Fixture builder for the COST MODEL: a synthetic project big enough that "run
 // the whole suite" and "run one test file" are separable measurements.
 //
-// TWO levers are needed to make those separable, and file count is NOT one of
-// them:
+// WHAT NARROWING IS WORTH, and therefore what this fixture has to reproduce.
+// `node --test` runs one child per available core, so a whole-suite run over F
+// test files on C cores is roughly `ceil(F/C)` waves of one file. Narrowing to a
+// single file saves those waves, so its payoff is ~FILES-PER-CORE. It is
+// genuinely inert only in the degenerate `F < C` case -- one wave, nothing left
+// to save but parent overhead, measured at 1.67x for 12 files on 16 cores. Real
+// suites sit the other side of that line (the suite this fixture was built
+// against: ~58s whole, ~0.7s for one file, ~83x).
 //
-//  1. `--test-concurrency=1` on the measured command. `node --test` defaults to
-//     one child per available core, so on a 16-core box a dozen test files run
-//     all at once and the whole suite costs about what ONE file costs -- measured
-//     at 1.67x here. No file count and no amount of per-file work can move that,
-//     because the parallelism absorbs both. A caller measuring the cost of scope
-//     must serialise the runner; `costConfig()` below does.
+// So `F >> C` is the regime worth measuring, and a 12-file fixture reproduces it
+// with two levers -- file count is NOT one of them:
+//
+//  1. `--test-concurrency=1` on the measured command, which collapses the C cores
+//     to one and puts 12 files into 12 waves. This is how the `F >> C` regime is
+//     reached inside a small fixture, not a distortion of it. A caller measuring
+//     the cost of scope must serialise the runner; `costConfig()` below does.
 //  2. A FIXED-ITERATION hash loop per test file, so per-file work dominates child
 //     spawn. Iterations, deliberately, and never a sleep: a sleep holds constant
 //     while the runner's own cost scales with the machine, so the ratio a sleep
