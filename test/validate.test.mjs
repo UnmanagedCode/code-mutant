@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { runCli } from './helpers/cli.mjs';
 import { git, guardFiles, makeRepo, write } from './helpers/tmp-repo.mjs';
@@ -316,6 +316,80 @@ describe('validate checks expectFail shape against the configured adapter', () =
         ['no-expect-fail'],
         'planNarrowing throwing for the same reason must not be reported as a second problem',
       );
+    } finally { repo.cleanup(); }
+  });
+});
+
+// The pre-flight's whole job is to predict what `run` would decide. A custom
+// adapter that `run` refuses outright is the one thing it must not stay silent
+// about -- before this, such a catalog validated clean at exit 0 while `run` on
+// the same tree exited 2.
+describe('validate reports the adapter-level canary prerequisites', () => {
+  function customRepo(label, parseBody) {
+    const repo = makeRepo({
+      files: guardFiles(),
+      config: { runner: 'custom' },
+      mutants: [GOOD],
+      label,
+    });
+    write(repo.root, 'harness/mutation/parse.mjs', parseBody);
+    return repo;
+  }
+
+  const NODE_TEST_MODULE = pathToFileURL(path.join(HERE, '..', 'lib', 'adapters', 'node-test.mjs')).href;
+
+  test('a counted parser with no canary() is a PROBLEM -- run refuses it before the baseline', async () => {
+    const repo = customRepo('validate-no-canary', `export { parse } from ${JSON.stringify(NODE_TEST_MODULE)};\n`);
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      const issue = report.issues.find((i) => i.code === 'adapter-no-canary');
+      assert.ok(issue, 'expected an adapter-no-canary issue');
+      assert.equal(issue.severity, 'problem');
+      assert.ok(report.summary.problems >= 1);
+      assert.equal(exitCode, 4);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a counted parser with no testFilePatterns is a WARNING, and never fails the exit code', async () => {
+    const repo = customRepo(
+      'validate-no-patterns',
+      `export { parse, canary } from ${JSON.stringify(NODE_TEST_MODULE)};\n`,
+    );
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      const issue = report.issues.find((i) => i.code === 'adapter-no-test-patterns');
+      assert.ok(issue, 'expected an adapter-no-test-patterns issue');
+      assert.equal(issue.severity, 'warning');
+      // Both halves, or it reads as a defect when it is a degradation of one
+      // command only.
+      assert.match(issue.detail, /cannot find a target file and the canary gate fails/);
+      assert.match(issue.detail, /`run` works when an "expectFail" reference/);
+      assert.equal(report.summary.problems, 0);
+      assert.equal(exitCode, 0, 'a warning must never fail the exit code');
+    } finally { repo.cleanup(); }
+  });
+
+  test('an exit-code parser raises neither: it needs neither export', async () => {
+    const repo = customRepo(
+      'validate-exit-code',
+      "export const grade = 'exit-code';\nexport function parse() { return { failedTests: [] }; }\n",
+    );
+    try {
+      const { report } = await validateJson(repo);
+      const codes = report.issues.map((i) => i.code);
+      assert.ok(!codes.includes('adapter-no-canary'), codes.join(', '));
+      assert.ok(!codes.includes('adapter-no-test-patterns'), codes.join(', '));
+    } finally { repo.cleanup(); }
+  });
+
+  test('a shipped adapter raises neither', async () => {
+    const repo = makeRepo({ files: guardFiles(), mutants: [GOOD], label: 'validate-shipped-adapter' });
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      const codes = report.issues.map((i) => i.code);
+      assert.ok(!codes.includes('adapter-no-canary'), codes.join(', '));
+      assert.ok(!codes.includes('adapter-no-test-patterns'), codes.join(', '));
+      assert.equal(exitCode, 0);
     } finally { repo.cleanup(); }
   });
 });

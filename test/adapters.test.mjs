@@ -11,7 +11,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { AdapterError, SHIPPED_ADAPTERS, loadAdapter } from '../lib/adapters/index.mjs';
+import {
+  AdapterError, SHIPPED_ADAPTERS, loadAdapter, missingCanaryExports,
+} from '../lib/adapters/index.mjs';
 import { stripAnsi } from '../lib/adapters/common.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -320,7 +322,9 @@ describe('custom parser loading', () => {
       assert.deepEqual(result.failedTests.map((t) => t.id), ['f::n']);
       // Defaults it did not provide, rather than invented behaviour.
       assert.equal(adapter.canNameFilter, false);
-      assert.equal(adapter.canary(), null);
+      // ABSENT, not a stub returning null: the absence is what the counted-grade
+      // canary prerequisite reads, and a stub would hide it.
+      assert.equal(adapter.canary, null);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -344,6 +348,52 @@ describe('custom parser loading', () => {
       const adapter = await loadAdapter('custom', { configDir: dir });
       assert.throws(() => adapter.parse('', '', 0), /expected an object/);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('parse() returning grade "exit-code" does NOT make the adapter exit-code grade', async () => {
+    // The adapter's grade comes from the MODULE-level export; the parse() return
+    // field is per-verdict. A parser that only sets the latter stays counted
+    // grade and needs a canary() -- documented in mutants.schema.md Appendix B
+    // because it is otherwise a silent trap.
+    const dir = withCustom(`
+      export function parse() {
+        return { grade: 'exit-code', passed: null, failed: null, skipped: null, ran: null,
+                 failedTests: [], compileError: false, counts: {} };
+      }
+    `);
+    try {
+      const adapter = await loadAdapter('custom', { configDir: dir });
+      assert.equal(adapter.grade, 'counted');
+      assert.deepEqual(missingCanaryExports(adapter), ['canary(source, { file })']);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  describe('missingCanaryExports', () => {
+    test('a bare counted parser is missing canary()', async () => {
+      const dir = withCustom('export function parse() { return { failedTests: [] }; }\n');
+      try {
+        const adapter = await loadAdapter('custom', { configDir: dir });
+        assert.deepEqual(missingCanaryExports(adapter), ['canary(source, { file })']);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    test('an exit-code parser is missing nothing -- its canary is synthesised by the gate', async () => {
+      const dir = withCustom(
+        "export const grade = 'exit-code';\nexport function parse() { return { failedTests: [] }; }\n",
+      );
+      try {
+        const adapter = await loadAdapter('custom', { configDir: dir });
+        assert.equal(adapter.grade, 'exit-code');
+        assert.deepEqual(missingCanaryExports(adapter), []);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    test('no shipped adapter trips it', async () => {
+      for (const runner of Object.keys(SHIPPED_ADAPTERS)) {
+        const adapter = await loadAdapter(runner, { configDir: '/tmp' });
+        assert.deepEqual(missingCanaryExports(adapter), [], `${runner} must never be refused`);
+      }
+    });
   });
 
   test('an unknown runner names the shipped adapters', async () => {

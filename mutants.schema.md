@@ -170,6 +170,8 @@ Two severities, and the split is a contract you may script against:
 | `no-expect-fail` | problem | Counted grade with no `expectFail`. Such a mutant **can never read `KILLED`**: if the mutation survives it reports an un-arbitrable `SURVIVED` (nothing was claimed to fail, so the survivor block has no test to point at), and if anything catches it, `IMPRECISE`. `probe` already refuses the same shape outright. Run `run --learn` to discover the failing set and fill `expectFail` from it. |
 | `no-narrow-scope` | problem | `planNarrowing` refused — references are present but none yields a scope. |
 | `mutation-dir-not-ignored` | problem | Catalog-level. `.mutation/` is not gitignored, which `run` hard-stops on. |
+| `adapter-no-canary` | problem | Adapter-level. A counted-grade adapter that does not export `canary(source, {file})` — see [Appendix B](#appendix-b--the-adapter-parse-contract). `run` refuses the whole invocation on it, before the baseline. |
+| `adapter-no-test-patterns` | warning | Adapter-level. Counted grade with no `testFilePatterns`: `mutate.mjs baseline` alone cannot discover a canary target. `run` still works when an `expectFail` reference narrows to a real test file, and `baseline` works once a run has journalled a target. |
 | `ref-file-missing` | warning | The adapter's references name files and `scopeOf(ref)` — the exact string narrowing substitutes — is not a path in this tree. |
 | `ref-shape` | warning | The adapter's references do **not** name files (`dotnet`, `exit-code`) but a reference is written `file::name`. |
 | `refs-ignored` | warning | Exit-code grade with `expectFail`/`expectPass` listed; at that grade the verdict is the command's exit status and those entries are never consulted. Scope with `narrowCommand` instead. |
@@ -502,19 +504,41 @@ It must return:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `grade` | `"counted"` \| `"exit-code"` | Defaults to `"counted"`. |
+| `grade` | `"counted"` \| `"exit-code"` | The grade of **this verdict**. Defaults to `"counted"`. It does **not** set the adapter's grade and does **not** confer the exit-code canary exemption — only the module-level `export const grade` below does that. |
 | `passed` / `failed` / `skipped` | number | Counts from this run. Reporting zero failures while the command exited non-zero makes the mutant `ERROR` (`unexplained-exit`), never `SURVIVED` — the counters alone are not taken as green. |
 | `ran` | number | Tests the command actually reported, **including skipped**. `0` makes the mutant `ERROR` (`scope-empty`), never `SURVIVED`. |
 | `failedTests` | `[{ file, name, id }]` | `id` is what `expectFail`/`expectPass` are compared against. |
 | `compileError` | boolean | True for a build/module-load break. Yields `IMPRECISE`. Never guess it from an exit code alone. |
 | `counts` | object | Free-form extras, carried into the report. |
 
-Optional exports, each with a safe default if omitted: `scopeOf(ref)` (default: the file part),
+**The adapter's grade is a module-level export**, separate from the `grade` field `parse()` returns:
+
+```js
+export const grade = 'counted'; // or 'exit-code'; default 'counted'
+```
+
+This export — and nothing else — selects the canary path. `export const grade = "exit-code"` is the
+only way to declare a gate with no named tests; its canary is then synthesised by injecting an
+unparseable line into the mutant's own site file, so it needs neither `canary` nor `testFilePatterns`.
+
+**`canary(source, {file})` is REQUIRED at counted grade.** Without it no canary can be synthesised
+for any target file, so the gate can never be established in any repo state. `run` refuses such a
+harness pre-flight — before the baseline command and, in copy mode, before any tree copy — with a
+`FAILED` canary gate and exit `2`, and `validate` reports it as the `adapter-no-canary` problem. It
+must return `{ content, testId, matches(failure) }`, or `null` to decline a given file (declining
+every file is a gate failure, not a refusal — the attempt is recorded).
+
+Other optional exports, each with a safe default if omitted: `scopeOf(ref)` (default: the file part),
 `substitute({scopes, refs, mode})` (default: space-joined quoted paths), `canNameFilter` (default
-`false`), `testFilePatterns` (default `[]`), `canary(source, {file})` (default: none, which makes the
-canary gate fail loudly rather than pass silently), `refsNameFiles` (whether a test reference names a
-file in the repo; used only by `validate`'s reference check — default: true when you did **not**
-override `scopeOf`, since you then inherit the file-part derivation, false when you did).
+`false`), `refsNameFiles` (whether a test reference names a file in the repo; used only by
+`validate`'s reference check — default: true when you did **not** override `scopeOf`, since you then
+inherit the file-part derivation, false when you did), and `testFilePatterns` (default `[]`).
+
+`testFilePatterns` is how `mutate.mjs baseline` — with no mutants in play, so no scope to borrow —
+discovers a canary target on its own; without it that command's canary gate fails. It is **not** a
+prerequisite: under `run` the canary borrows the mutants' own narrow scopes, and a later `baseline`
+borrows the canary target the previous run journalled. Declaring it is what makes `baseline`
+self-sufficient, and `validate` warns (`adapter-no-test-patterns`) when it is absent.
 
 A project parser owns **output parsing and nothing else** — never isolation, restore, or verdict
 semantics. Those must mean the same thing in every project, or the trust gates degrade into

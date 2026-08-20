@@ -32,10 +32,14 @@ Build a project-local mutation-testing harness at `harness/mutation/`, driven by
      fits, and write a `custom` parser instead if it disagrees.
    - Nothing matches — write the `custom` parser. That is the intended path, not a last resort:
      `harness/mutation/parse.mjs` (that exact filename, beside `config.json`) exporting
-     `parse(stdout, stderr, exitCode)` — **plus, for a counted grade, `testFilePatterns` and
-     `canary`**, which default to nothing and make the canary gate fail every run rather than pass
-     silently. Full export contract: `code-mutant`'s `mutants.schema.md` Appendix B. Prove it
-     against the captured output before finishing.
+     `parse(stdout, stderr, exitCode)` — **plus, at counted grade, `canary(source, {file})`, which
+     is required**: without it no canary can be synthesised for any file, and `run` refuses the
+     harness pre-flight (exit 2) before it even runs the baseline. Declare `testFilePatterns` too, or
+     `mutate.mjs baseline` on its own cannot discover a canary target (`run` borrows the mutants'
+     scopes instead). For a command with nothing to parse, `export const grade = "exit-code"` — that
+     module-level export, not `parse()`'s returned `grade` field, is what declares the grade — and it
+     needs neither of those two exports. Full export contract: `code-mutant`'s `mutants.schema.md`
+     Appendix B. Prove it against the captured output before finishing.
 
    A counted-grade command must exit 0 whenever no test failed: one that chains a lint or guardrail
    step exiting non-zero on its own fails the baseline gate (`outcome: "failed"`), so scope
