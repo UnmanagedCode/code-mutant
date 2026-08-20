@@ -11,8 +11,11 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { loadAdapter } from '../lib/adapters/index.mjs';
+import { discoverCanaryTargets, trackedFiles } from '../lib/gates.mjs';
+import { validateCatalog } from '../lib/validate.mjs';
 import { runCli } from './helpers/cli.mjs';
 import { git, guardFiles, makeRepo, write } from './helpers/tmp-repo.mjs';
 
@@ -316,6 +319,207 @@ describe('validate checks expectFail shape against the configured adapter', () =
         ['no-expect-fail'],
         'planNarrowing throwing for the same reason must not be reported as a second problem',
       );
+    } finally { repo.cleanup(); }
+  });
+});
+
+// The pre-flight's whole job is to predict what `run` would decide. A custom
+// adapter that `run` refuses outright is the one thing it must not stay silent
+// about -- before this, such a catalog validated clean at exit 0 while `run` on
+// the same tree exited 2.
+describe('validate reports the adapter-level canary prerequisites', () => {
+  function customRepo(label, parseBody) {
+    const repo = makeRepo({
+      files: guardFiles(),
+      config: { runner: 'custom' },
+      mutants: [GOOD],
+      label,
+    });
+    write(repo.root, 'harness/mutation/parse.mjs', parseBody);
+    return repo;
+  }
+
+  const NODE_TEST_MODULE = pathToFileURL(path.join(HERE, '..', 'lib', 'adapters', 'node-test.mjs')).href;
+
+  test('a counted parser with no canary() is a PROBLEM -- run refuses it before the baseline', async () => {
+    const repo = customRepo('validate-no-canary', `export { parse } from ${JSON.stringify(NODE_TEST_MODULE)};\n`);
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      const issue = report.issues.find((i) => i.code === 'adapter-no-canary');
+      assert.ok(issue, 'expected an adapter-no-canary issue');
+      assert.equal(issue.severity, 'problem');
+      assert.ok(report.summary.problems >= 1);
+      assert.equal(exitCode, 4);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a counted parser with no testFilePatterns is a WARNING, and never fails the exit code', async () => {
+    const repo = customRepo(
+      'validate-no-patterns',
+      `export { parse, canary } from ${JSON.stringify(NODE_TEST_MODULE)};\n`,
+    );
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      const issue = report.issues.find((i) => i.code === 'adapter-no-test-patterns');
+      assert.ok(issue, 'expected an adapter-no-test-patterns issue');
+      assert.equal(issue.severity, 'warning');
+      // BOTH halves: without the second this reads as a defect when it is a
+      // degradation of one command only.
+      assert.match(issue.detail, /cannot find a target file/);
+      assert.match(issue.detail, /run` works/);
+      assert.equal(report.summary.problems, 0);
+      assert.equal(exitCode, 0, 'a warning must never fail the exit code');
+    } finally { repo.cleanup(); }
+  });
+
+  test('testFilePatterns that match no tracked file warn the same as none at all', async () => {
+    // The two shapes leave `baseline` in the identical state -- no candidate to
+    // inject into -- so keying the warning on the patterns being EMPTY let this
+    // one validate clean at exit 0 while `baseline` on the same tree exited 2.
+    // Checked with the gate's own discovery call, which runs no command.
+    const repo = customRepo('validate-patterns-match-nothing', `
+      export { parse, canary } from ${JSON.stringify(NODE_TEST_MODULE)};
+      export const testFilePatterns = ['spec/**/*.spec.js'];
+    `);
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      const issue = report.issues.find((i) => i.code === 'adapter-no-test-patterns');
+      assert.ok(issue, 'expected an adapter-no-test-patterns issue');
+      assert.equal(issue.severity, 'warning');
+      assert.match(issue.detail, /match no tracked file/);
+      assert.match(issue.detail, /spec\/\*\*\/\*\.spec\.js/, 'name the patterns that matched nothing');
+      assert.equal(exitCode, 0);
+    } finally { repo.cleanup(); }
+  });
+
+  test('testFilePatterns that DO match raise nothing', async () => {
+    const repo = customRepo('validate-patterns-match', `
+      export { parse, canary } from ${JSON.stringify(NODE_TEST_MODULE)};
+      export const testFilePatterns = ['test/**/*.test.mjs'];
+    `);
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      assert.equal(report.issues.length, 0, JSON.stringify(report.issues));
+      assert.equal(exitCode, 0);
+    } finally { repo.cleanup(); }
+  });
+
+  test('an adapter missing both exports learns both facts in one pass', async () => {
+    const repo = customRepo('validate-missing-both', `export { parse } from ${JSON.stringify(NODE_TEST_MODULE)};\n`);
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      const codes = report.issues.map((i) => i.code);
+      assert.ok(codes.includes('adapter-no-canary'), codes.join(', '));
+      assert.ok(
+        codes.includes('adapter-no-test-patterns'),
+        'the canary problem must not hide the patterns warning -- one pass, one fix list',
+      );
+      assert.equal(exitCode, 4);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a run-level problem is not reported as a catalog fault', async () => {
+    // The catalog here resolves perfectly; the ADAPTER is what `run` refuses. The
+    // human-readable tail used to print "0 with a problem" directly above "the
+    // catalog does not resolve against this tree", pointing the reader at the one
+    // file that is fine.
+    const repo = customRepo('validate-run-level-prose', `export { parse } from ${JSON.stringify(NODE_TEST_MODULE)};\n`);
+    try {
+      const { exitCode, stdout } = await validate(repo);
+      assert.equal(exitCode, 4);
+      assert.match(stdout, /1 resolve, 0 with a problem/);
+      assert.match(stdout, /run-level problem\(s\) above, outside the catalog/);
+      assert.doesNotMatch(
+        stdout,
+        /the catalog does not resolve against this tree/,
+        'the exit line must not diagnose a catalog that resolves',
+      );
+      assert.match(stdout, /exit 4:.*run-level problem/);
+    } finally { repo.cleanup(); }
+  });
+
+  test('an exit-code parser raises neither: it needs neither export', async () => {
+    const repo = customRepo(
+      'validate-exit-code',
+      "export const grade = 'exit-code';\nexport function parse() { return { failedTests: [] }; }\n",
+    );
+    try {
+      const { report } = await validateJson(repo);
+      const codes = report.issues.map((i) => i.code);
+      assert.ok(!codes.includes('adapter-no-canary'), codes.join(', '));
+      assert.ok(!codes.includes('adapter-no-test-patterns'), codes.join(', '));
+    } finally { repo.cleanup(); }
+  });
+
+  test('the problem names a malformed grade instead of calling it counted', async () => {
+    // The gate's twin message is pinned in test/gates.test.mjs; this is the other
+    // direction. Both are generated from describeGrade() so they cannot drift, and
+    // "is counted grade" about an adapter declaring `grade = "Counted"` would send
+    // the reader past the typo that is the actual bug. loadAdapter normalises its
+    // own grades, so a direct call is the only way to reach this.
+    const repo = makeRepo({ files: guardFiles(), mutants: [GOOD], label: 'validate-bad-grade' });
+    try {
+      const base = await loadAdapter('node-test', { configDir: path.join(repo.root, 'harness', 'mutation') });
+      const report = validateCatalog({
+        repoRoot: repo.root,
+        config: { testCommand: 'node --test {tests}' },
+        adapter: { ...base, name: 'hand-built', grade: 'Counted', canary: null },
+        catalog: { path: '.mutation/mutants.json', mutants: [] },
+      });
+      const issue = report.issues.find((i) => i.code === 'adapter-no-canary');
+      assert.ok(issue, 'expected an adapter-no-canary issue');
+      assert.match(issue.detail, /runs at grade "Counted", which is not a grade the runner knows/);
+      assert.doesNotMatch(issue.detail, /runs at counted grade/);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a git failure is not reported as "your patterns match nothing"', async () => {
+    // `trackedFiles` swallows a git failure -- ENOBUFS on a monorepo past
+    // execFileSync's buffer, or no repo at all -- and returns no candidates. The
+    // gate tolerates that; validate must not turn it into a specific false claim
+    // about the adapter's patterns. A directory that is not a git repo stands in
+    // for the failure, deterministically and with no network or size fixture.
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'code-mutant-test-nogit-'));
+    try {
+      assert.equal(trackedFiles(dir), null, 'a git failure must be distinguishable from an empty repo');
+      const withPatterns = await loadAdapter('node-test', { configDir: dir });
+      assert.ok(withPatterns.testFilePatterns.length, 'fixture assumption: node-test declares patterns');
+      assert.deepEqual(
+        discoverCanaryTargets({ workspaceRoot: dir, repoRoot: dir, adapter: withPatterns }),
+        [],
+        'the gate stays tolerant of a git failure',
+      );
+
+      const report = validateCatalog({
+        repoRoot: dir,
+        config: { testCommand: 'node --test {tests}' },
+        adapter: withPatterns,
+        catalog: { path: path.join(dir, 'mutants.json'), mutants: [] },
+      });
+      assert.ok(
+        !report.issues.some((i) => i.code === 'adapter-no-test-patterns'),
+        'patterns cannot be judged when git could not list the tree',
+      );
+
+      // The other half needs no git at all, so it is still reported.
+      const noPatterns = validateCatalog({
+        repoRoot: dir,
+        config: { testCommand: 'node --test {tests}' },
+        adapter: { ...withPatterns, testFilePatterns: [] },
+        catalog: { path: path.join(dir, 'mutants.json'), mutants: [] },
+      });
+      assert.ok(noPatterns.issues.some((i) => i.code === 'adapter-no-test-patterns'));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('a shipped adapter raises neither', async () => {
+    const repo = makeRepo({ files: guardFiles(), mutants: [GOOD], label: 'validate-shipped-adapter' });
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      const codes = report.issues.map((i) => i.code);
+      assert.ok(!codes.includes('adapter-no-canary'), codes.join(', '));
+      assert.ok(!codes.includes('adapter-no-test-patterns'), codes.join(', '));
+      assert.equal(exitCode, 0);
     } finally { repo.cleanup(); }
   });
 });

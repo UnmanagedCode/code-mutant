@@ -141,11 +141,12 @@ VALIDATE
   Runs no test, so it establishes no trust gate and produces no verdict. Exit 0
   means "every catalog mutant resolves against this tree" -- never "the gates
   passed". Two severities, and the split is a contract you may script against:
-    problem  run could not produce a trustworthy verdict for this mutant.
-             Either the runner's own code refuses it -- validate reports that by
-             calling that same code, not by re-deciding it -- or the mutant is
-             structurally incapable of reading KILLED (counted grade with no
-             expectFail). Any problem exits 4, the usual catalog-error code.
+    problem  run could not produce a trustworthy verdict -- for this mutant, or
+             for the whole invocation. Either the runner's own code refuses it
+             -- validate reports that by calling that same code, not by
+             re-deciding it -- or the mutant is structurally incapable of
+             reading KILLED (counted grade with no expectFail). Any problem
+             exits 4, the usual catalog-error code.
     warning  validate's own advice; run proceeds, something is degraded.
              NEVER affects the exit code.
   Per-code table: mutants.schema.md, "Pre-flight validation".

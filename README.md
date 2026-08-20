@@ -73,7 +73,7 @@ signal grade; see [Narrowing and signal grades](#narrowing-and-signal-grades)). 
 extension path is **`custom`: you write your own.** A project points `runner` at
 `"custom"`, drops a `parse.mjs` beside its `config.json` exporting
 `parse(stdout, stderr, exitCode)`, and proves it against output it captured from its own suite. The
-`parse()` contract is specified in [`mutants.schema.md`](mutants.schema.md) (Appendix B). Adapters
+full export contract is specified in [`mutants.schema.md`](mutants.schema.md) (Appendix B). Adapters
 that prove themselves useful across projects are the candidates for being pulled up into the plugin
 later — that is how this list is meant to grow.
 
