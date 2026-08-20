@@ -88,6 +88,25 @@ describe('a command that exited but leaked a pipe holder', () => {
     assert.notEqual(classification.verdict, Verdict.SURVIVED);
   });
 
+  test('7d: a high-volume run drains fully and is never flagged', async () => {
+    // The specific risk in settling on `exit`: a legitimately slow-draining run
+    // reading as incomplete. Structurally it cannot -- once the child has exited
+    // nothing new is produced, and what remains is a pipe buffer that drains in
+    // microseconds -- but "cannot" deserves evidence, so this writes ~4MB and then
+    // exits, and asserts every byte arrived with no flag.
+    const s = scratch();
+    try {
+      const run = await runCommand(
+        `node -e "const line='x'.repeat(255)+String.fromCharCode(10); for(let i=0;i<16384;i++) process.stdout.write(line);"`,
+        { cwd: s.dir, timeoutMs: 30_000 },
+      );
+      assert.equal(run.exitCode, 0);
+      assert.equal(run.outputIncomplete, false, 'a large but complete capture must not be flagged');
+      assert.equal(run.truncated, false);
+      assert.equal(run.stdout.length, 16384 * 256, `captured ${run.stdout.length} of ${16384 * 256} bytes`);
+    } finally { s.cleanup(); }
+  });
+
   test('7c: a clean command is untouched -- complete output, no flag, no added latency', async () => {
     // The negative direction. Without this, a change that flagged EVERY run would
     // pass claims 6 and 7 and break every real verdict.
