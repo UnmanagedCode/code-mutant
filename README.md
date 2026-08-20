@@ -48,7 +48,7 @@ survivors as findings the conductor can arbitrate without reading project code. 
 
 ## The mutation harness — `harness/mutation/`
 
-Built once, in a project opted into mutation testing, by the scaffold above, committed to the
+Built by the scaffold above — once, in a project opted into mutation testing — and committed to the
 project's repo (the *how* persists; see [Artifact lifetime](#artifact-lifetime) below).
 `harness/mutation/config.json` fields:
 

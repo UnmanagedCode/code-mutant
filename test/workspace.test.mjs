@@ -161,9 +161,9 @@ describe('config', () => {
           && /not a gap/.test(err.message)
           && /nothing to escalate/.test(err.message)
           // Narrow by construction: it can only fire on a message that keeps the new
-          // framing AND re-adds the old sentence -- i.e. an add-without-delete edit,
-          // this repo's documented failure mode. The two presence clauses above are
-          // what do the real work.
+          // framing AND re-adds the old sentence -- the add-without-delete edit the
+          // workspace convention forbids ("each instruction once, in its single best
+          // home"). The two presence clauses above are what do the real work.
           && !/Report the gap upward/.test(err.message),
       );
     } finally { repo.cleanup(); }
