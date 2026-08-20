@@ -274,6 +274,8 @@ finding can be pointed at exactly the commit it was found against.
   },
   narrowBaselines: [ { command, green, counts, durationMs } ],   // one entry per DISTINCT narrow scope
   timings: { totalMs, gatesMs, narrowBaselinesMs, mutantsMs },
+  resumed:   { journal, key, reused, ran } | null,   // non-null iff --resume was passed
+  resumable: { key, available } | null,             // ADVISORY: a journal matches and --resume was NOT passed
   results: [ {
     id, invariant, whyNotEquivalent, waived,
     verdict: "KILLED"|"SURVIVED"|"IMPRECISE"|"TIMEOUT"|"ERROR"|"LEARNED",
@@ -294,7 +296,9 @@ finding can be pointed at exactly the commit it was found against.
     exitCode, durationMs,
     applyMs, measureMs, restoreMs,  // this mutant's three phases; each null for a phase that never ran
     deadlineMs,                     // the wall-clock cap this mutant's command actually got
-    hang: { blame: "mutation"|"suite", deadlineMs, referenceMs } | null   // non-null ONLY on a deadline kill
+    hang: { blame: "mutation"|"suite", deadlineMs, referenceMs } | null,  // non-null ONLY on a deadline kill
+    graded,                         // derived from `verdict` alone -- see below
+    fromJournal                     // true iff reused by --resume rather than measured this invocation
   } ],
   noTrace: { ok, before, after } | null,
   pathSetMismatches: [ … ],
@@ -376,6 +380,50 @@ synonym field.
 The run report has **no `problem` field** — that belongs to
 [`validate`](#the-validate-report), which emits a deliberately different shape. A consumer looking
 for `problem` on a run result is reading the wrong report.
+
+## Resuming a run
+
+`run` appends each completed verdict to **`.mutation/journal/<key>.jsonl`** (JSON Lines, one line per
+mutant, flushed as it goes — so a process that never gets to run its exit path still leaves every
+verdict before the one in flight). Gitignored, guarded by the same assertion as
+`.mutation/results/`. `run --resume` reuses matching verdicts instead of re-measuring them.
+
+**Written only when** `reproducible === true` and `mutatedSha !== null` — a `--allow-dirty` run
+journals nothing, because a non-reproducible verdict must never become a resumable one.
+`--resume --allow-dirty` is a usage error (exit 4). Only Phase-B results are journalled; a plan
+failure (stale anchor, unparseable patch) cost no measured command and is free to recompute. A line
+is appended only after restore succeeded for that mutant, so a journalled verdict always implies its
+tree was restored and proved.
+
+**`<key>` covers** `mutatedSha`, the adapter (`name`/`grade`/`modulePath`), `isolation`, `jobs`,
+`learn`, and a config fingerprint over `baselineCommand`, `testCommand`, `runner`, `timeoutMs`,
+`hang`, `setup`, `teardown`, `preserve`. Change any of them and the key changes, so nothing is
+reused. `jobs` is in there deliberately: reusing a `jobs=4` verdict inside a `jobs=1` re-run would
+hide precisely the concurrent-suite hazard the README tells you to check for. `hang` is in there so
+retuning the deadline forces every hung mutant to be re-measured.
+
+**Per mutant**, reuse additionally requires an unchanged fingerprint over `id`, `sites`,
+`expectFail`, `expectPass`, `narrowTo` and `narrowCommand` — everything that changes *what is
+measured*. `invariant`, `whyNotEquivalent` and `waived` are deliberately **excluded**: they are prose
+and decisions, re-read from the current catalog on reuse. So recording a waiver costs no re-run.
+
+**The two things resume never does:**
+
+- **It never skips a gate.** clean-tree, empty-diff-vs-base, baseline and canary all run in full on
+  every invocation — a cached gate result would be a gate that did not run this invocation reading as
+  one that passed, the exact ambiguity `not-established` exists to prevent. Stated plainly: a resumed
+  run still pays the fixed cost. Resume saves per-mutant measurement only. (The journalled canary
+  *target* is reused as a candidate **hint**, reordering which files the gate tries first; the gate
+  still runs and must still fire.)
+- **It never assumes tree state.** The journal records verdicts, never "what I left in the tree". A
+  SIGKILL can leave a mutation behind, and on the next invocation the clean-tree gate sees it as an
+  uncommitted change and refuses (exit 2) rather than resuming onto a poisoned tree.
+
+Reuse is **opt-in** because a reused verdict was produced by a process nobody watched. Every one is
+labelled `fromJournal: true`, counted in `resumed.reused`, and named in the printed report, so it
+never reads as a verdict this run made. When a journal matches and `--resume` was *not* passed, the
+report carries `resumable` and the CLI prints an advisory naming the flag — **advisory only**: never
+a refusal, never a gate, no effect on the exit code.
 
 ## Exit codes
 

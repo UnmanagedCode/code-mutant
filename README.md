@@ -185,6 +185,11 @@ Per-review, gitignored, lives at `.mutation/mutants.json`, owned by the reviewer
 per-entry field schema is specified in [`mutants.schema.md`](mutants.schema.md) — that file is the
 authoritative format; this README only covers what the catalog is for.
 
+Alongside it, `run` appends every completed verdict to a **journal** under `.mutation/journal/`, so
+an interrupted run can be resumed with `run --resume` instead of re-measuring everything it already
+graded. Contract — which key, what invalidates it, and the two things resume never does — is in
+[`mutants.schema.md`](mutants.schema.md#resuming-a-run).
+
 A site is either an anchor + replacement (a substring swap, refused unless the anchor matches
 exactly once and the replacement isn't a no-op) or a unified `patch` applied with `git apply`, for
 structural mutations an anchor can't express (reordering two migrations, say) — that residue stays
@@ -197,6 +202,7 @@ hand-authored; the runner doesn't invent structural edits.
 | **Harness** (`harness/mutation/config.json`, its README, an optional `parse.mjs`) | Project-level — the *how*. | Yes, built once by the scaffold. |
 | **Canary** | One gate check. | No — never written to the repo. |
 | **Mutant catalog + results** (`.mutation/`) | One review loop — the *what*, for one task. | No — gitignored, dies with the worktree. |
+| **Verdict journal** (`.mutation/journal/`) | One review loop. Read only by `run --resume`. | No — gitignored, dies with the worktree. |
 
 Mutants are scaffolding: once a mutant proves a test stands, the *test* is the durable artifact and
 the mutant has done its job. Keeping a catalog past merge buys little (nothing in the workspace's
@@ -211,7 +217,7 @@ Stack-agnostic; the test command is always a shell string. Invoked directly, fro
 ```
 node mutate.mjs baseline                    [--copy|--in-place] [--allow-dirty] [--json]
 node mutate.mjs run [--id <id> ...] [--all] [--learn] [--copy|--in-place] [--jobs N]
-                    [--base <branch>] [--allow-dirty] [--json]
+                    [--base <branch>] [--allow-dirty] [--resume] [--json]
 node mutate.mjs validate                    [--json]
 node mutate.mjs probe --file <path> --anchor <text> --replace <text>
                       [--learn] [--expect-fail <test> ...] [--expect-pass <test> ...]

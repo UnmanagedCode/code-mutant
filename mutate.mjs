@@ -37,7 +37,7 @@ const HELP = `code-mutant -- mutation-verified coverage proving
 USAGE
   node mutate.mjs baseline                    [--copy|--in-place] [--allow-dirty] [--json]
   node mutate.mjs run [--id <id> ...] [--all] [--learn] [--copy|--in-place] [--jobs N]
-                      [--base <branch>] [--allow-dirty] [--json]
+                      [--base <branch>] [--allow-dirty] [--resume] [--json]
   node mutate.mjs validate                    [--json]
   node mutate.mjs probe --file <path> --anchor <text> --replace <text>
                         [--learn] [--expect-fail <test> ...] [--expect-pass <test> ...]
@@ -97,6 +97,13 @@ FLAGS
   --allow-dirty      baseline/run: proceed despite a dirty worktree instead of
                      refusing. Every verdict from that invocation is labelled
                      non-reproducible, in both the matrix and --json.
+  --resume           run: reuse per-mutant verdicts already journalled for this
+                     exact sha, config, adapter, isolation and jobs, instead of
+                     re-measuring them. Every gate still runs in full, so a
+                     resumed run still pays the baseline and canary. Opt-in:
+                     a reused verdict is one an unwatched process produced, and
+                     it is labelled fromJournal so it never reads as one this
+                     run made. Incompatible with --allow-dirty.
   --file <path>      probe: file to mutate.
   --anchor <text>    probe: exact substring to replace; must match exactly once.
   --replace <text>   probe: replacement text; must differ from the anchor.
@@ -219,7 +226,9 @@ The catalog format is specified in mutants.schema.md, which also documents the
 --json report shape and the adapter parse() contract.
 `;
 
-const BOOLEAN_FLAGS = new Set(['--all', '--copy', '--in-place', '--json', '--help', '-h', '--allow-dirty', '--learn']);
+const BOOLEAN_FLAGS = new Set([
+  '--all', '--copy', '--in-place', '--json', '--help', '-h', '--allow-dirty', '--learn', '--resume',
+]);
 const REPEATABLE_FLAGS = new Set(['--id', '--expect-fail', '--expect-pass']);
 const VALUE_FLAGS = new Set([
   '--jobs', '--base', '--file', '--anchor', '--replace', '--patch-file', ...REPEATABLE_FLAGS,
@@ -331,6 +340,17 @@ async function commandRun(flags, lists, log) {
     throw new Error('run needs either --all or at least one --id (refusing to guess which mutants you meant)');
   }
 
+  // Refused rather than silently ignoring one of the two: --allow-dirty produces
+  // non-reproducible verdicts and nothing journals them, so --resume would have
+  // nothing to reuse AND nothing to record. Saying so beats a run that quietly
+  // resumes nothing.
+  if (flags['--resume'] && flags['--allow-dirty']) {
+    throw new Error(
+      '--resume and --allow-dirty are incompatible: a --allow-dirty run\'s verdicts are '
+      + 'non-reproducible, so they are never journalled and there is nothing to resume from',
+    );
+  }
+
   const catalog = requireCatalog(repoRoot);
   const mutants = ids.length ? selectById(catalog, ids) : catalog.mutants;
 
@@ -347,11 +367,21 @@ async function commandRun(flags, lists, log) {
     checkBaseDiff: true,
     base: config.baseBranch,
     learn: Boolean(flags['--learn']),
+    resume: Boolean(flags['--resume']),
+    journalling: true,
   });
   report.command = 'run';
   report.catalog = catalog.path;
   report.resultsFile = writeResults(repoRoot, runId(), toJson(report));
   const code = emit(report, flags);
+  // Emitted on stderr regardless of --json, because --json owns stdout and this
+  // has to reach a human reading a scrollback as well as a machine reading the
+  // `resumable` field. Advisory only: no gate, no effect on `code`.
+  if (report.resumable) {
+    log(`resumable: ${report.resumable.available} verdict(s) for this exact sha and config are already `
+      + `journalled (key ${report.resumable.key}). Re-run with --resume to reuse them instead of `
+      + 're-measuring; the gates re-run either way.');
+  }
   if (!flags['--json']) log(`results: ${report.resultsFile}`);
   return code;
 }

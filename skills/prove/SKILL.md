@@ -68,7 +68,9 @@ read `KILLED`, but it runs no tests, so it establishes no gate and does not stan
 Run narrow by default. A structural mutation with no anchor+replace form (e.g. reordering two
 migrations) uses the `patch` site form instead — that residue stays hand-authored, the runner
 doesn't invent structural edits for you, but `probe --patch-file` iterates one without a catalog
-entry and `probe --id` re-runs a single existing entry under probe's relaxed gates. For exact
+entry and `probe --id` re-runs a single existing entry under probe's relaxed gates. If a run is
+interrupted, re-run it with `--resume` rather than restarting: completed verdicts are reused instead
+of re-measured. For exact
 command syntax, `mutate.mjs --help` or the project's `harness/mutation/README.md` is authoritative.
 
 ## 7. Interpret
