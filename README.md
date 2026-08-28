@@ -19,13 +19,14 @@ receives no mutants, only a report.
 
 **The prover is its own worker**, spawned to mutation-prove and nothing else — never the
 implementer, and never a lens reviewer (correctness, security, …) with proving bolted onto its
-brief. It is a role, not a playbook stage: no playbook declares a tester stage, so the conductor
-spawns it into whichever slot the review stage provides (`relay` and `solo` both take
-`workers: many` there) or into `freeform`. Unlike the inspect-only reviewers it runs beside, it
-**writes to the implementer's worktree** — under `in-place` isolation the mutant is applied there
-and byte-restored after each measurement — so exactly one prover runs per round: the runner's
-concurrency guard (`lib/occupancy.mjs`) lives inside a single runner process, so two concurrent
-`/code-mutant:prove` runs would mutate one tree with neither detecting the other.
+brief. It is a role, not a stage in anyone's workflow: `code-mutant` defines no stage and expects
+none, so there is no stage named after this role for a conductor to find. Spawn it into whatever
+slot the workflow already opens for a worker running alongside the implementer. Unlike the
+inspect-only reviewers it runs beside, it **writes to the implementer's worktree** — under
+`in-place` isolation the mutant is applied there and byte-restored after each measurement — so
+exactly one prover runs per round: the runner's concurrency guard (`lib/occupancy.mjs`) lives
+inside a single runner process, so two concurrent `/code-mutant:prove` runs would mutate one tree
+with neither detecting the other.
 
 The implementer's own coverage duty is to *state*, not to prove: name which invariant each test
 pins, and stop there. It is never briefed to break source to watch a test fail — no mutating,

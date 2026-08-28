@@ -4,10 +4,10 @@ One evidence form added to the review→refine loop: a **prover** mutation-prove
 
 - **Spawn a dedicated prover to run `/code-mutant:prove`** against the implementer's coverage
   claims — never the implementer, never an extra duty on a lens reviewer's brief. It is a role,
-  not a stage: spawn it into the review stage's slot (`workers: many`) or `freeform`, and brief it
-  write-and-restore, not inspect-only — it mutates the shared worktree and byte-restores after
-  each measurement. **One per round** — the runner's concurrency guard is per-process, so two
-  provers mutate one tree undetected.
+  not a stage — don't look for one named after it; spawn it into whatever slot your workflow opens
+  for a worker beside the implementer, and brief it write-and-restore, not inspect-only, since it
+  mutates the shared worktree and byte-restores after each measurement. **One per round**: the
+  runner's concurrency guard is per-process, so two provers mutate one tree undetected.
 - **Trust the runner's non-zero exit for un-waived survivors over the prover's self-reported
   verdict**, and hold its every verdict to "a test that passes either way proves nothing."
 - **Brief the implementer too** — have it state which invariant each test pins, and nothing
