@@ -3,7 +3,7 @@
 **This file is the authoritative format.** Anything else that describes the catalog defers here.
 
 **Location:** `.mutation/mutants.json`, in the worktree under review.
-**Lifetime:** one review loop. Gitignored, owned by the reviewer, deleted with the worktree.
+**Lifetime:** one review loop. Gitignored, owned by the prover, deleted with the worktree.
 **Why ephemeral:** a mutant is scaffolding that proves a test stands. Once proven, the *test* is the
 durable artifact. Anchors are coupled to exact source text, so a committed catalog turns into a
 stream of stale-anchor `ERROR`s on invariants nobody is currently reviewing.
@@ -35,7 +35,7 @@ Ids must be unique within the file.
 | `narrowTo` | no | `"file"` \| `"names"` | Narrowing granularity. Default `"file"`. See [Narrowing](#narrowing). |
 | `waived` | no | `{ "reason": string }` | Records a conductor decision not to fix this survivor. Waived mutants still run and report separately; they do not affect the exit code. |
 
-Unknown fields are ignored, so a reviewer may keep notes alongside an entry.
+Unknown fields are ignored, so a prover may keep notes alongside an entry.
 
 ## Site forms
 
@@ -79,7 +79,7 @@ Some mutations stay hand-driven. The runner does not invent structural edits.
 ## Test references
 
 A test reference identifies one test to the adapter. Format is per adapter, because the identifier
-each runner prints is the one a reviewer should write:
+each runner prints is the one a prover should write:
 
 | Adapter | Reference | Default narrowing scope |
 |---|---|---|
@@ -108,7 +108,7 @@ outside `expectFail`" unobservable by construction, silently gutting `IMPRECISE`
 catches equivalent mutants.
 
 `narrowTo: "names"` opts one mutant into name-level narrowing. It exists because the runner cannot
-detect that a file "holds tests the reviewer deliberately excludes" — only the author can state it.
+detect that a file "holds tests the prover deliberately excludes" — only the author can state it.
 **Consequence:** for that mutant, `IMPRECISE` detection shrinks to the `expectPass` set alone, and
 the report labels it. Use it when the adapter can name-filter and the file holds tests you are
 deliberately leaving out; otherwise leave it at the default.

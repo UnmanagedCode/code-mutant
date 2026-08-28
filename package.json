@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-or-later",
-  "description": "Mutation-verified coverage proving — reviewer-driven mutation testing harness for code-conductor.",
+  "description": "Mutation-verified coverage proving — prover-driven mutation testing harness for code-conductor.",
   "scripts": {
     "test": "node --test test/*.test.mjs"
   }
