@@ -1,30 +1,30 @@
 # Demand mutation-verified coverage
 
-This adds one form of evidence to the canonical review→refine loop: a reviewer must
-mutation-prove a "covered" claim before anyone trusts it.
+One evidence form added to the review→refine loop: a **prover** mutation-proves "covered" claims.
 
-- **Mutation-prove, don't trust the report** — brief the reviewer to run `/code-mutant:prove`
-  against the implementer's coverage claims; the implementer is the wrong owner for target
-  selection. Brief it write-and-restore, not read-only — the mutant is applied to the tree and
-  byte-restored after each measurement.
-- **Trust the runner's non-zero exit for un-waived survivors over the reviewer's self-reported
-  verdict** — expect an independent baseline re-measurement too, not a reused number, and hold
-  every claim to "a test that passes either way proves nothing."
-- **Brief the implementer too** — state each coverage claim precisely (which invariant each test
-  pins), because it will be independently mutated, not re-read. Have it commit its work before
-  review starts, and relay a dirty-worktree refusal back to it rather than waiving the gate — the
-  reviewer can't commit on its behalf.
-- **Arbitrate survivors like any other finding** — a `SURVIVED` verdict is a finding to weigh, not
-  an automatic block; relay what's worth fixing, and say so explicitly when something isn't, so the
-  reviewer marks it waived — left unwaived, it's re-reported every round.
-- **Relay survivors as invariants, never as mutants to re-run.** A finding is relayed as an invariant that needs a test; handing the implementer the mutants to re-run puts the gate under the party whose verdict can't be independent anyway.
-- **Keep non-vacuous test verification with the implementer, mutation artifacts with the reviewer** — brief the implementer to confirm each new test fails against the unfixed behaviour and to state which test pins which invariant, and never to author, run, or touch `.mutation/`.
-- **A timed-out mutation run keeps its completed verdicts; arbitrate a hang by blame.** Re-prompting
-  or replacing a wedged reviewer no longer forfeits the run — that call is about the worker, not about
-  salvaging its work. A hang the runner blames on the suite is a project defect to route to the
-  implementer, not a mutant for the reviewer to rewrite; the reviewer's side is
-  `/code-mutant:prove` step 7.
-- **A project with no `harness/mutation/config.json` is configured for no mutation testing** — the
-  reviewer notes it and the review proceeds without mutation proof; never brief a bootstrap or a
-  by-hand mutation into a review, since opting a project in is separate owner-directed work against
-  `code-mutant`'s `scaffold/harness.md`.
+- **Spawn a dedicated prover to run `/code-mutant:prove`** against the implementer's coverage
+  claims — never the implementer, never an extra duty on a lens reviewer's brief. It is a role,
+  not a stage: spawn it into the review stage's slot (`workers: many`) or `freeform`, and brief it
+  write-and-restore, not inspect-only — it mutates the shared worktree and byte-restores after
+  each measurement. **One per round** — the runner's concurrency guard is per-process, so two
+  provers mutate one tree undetected.
+- **Trust the runner's non-zero exit for un-waived survivors over the prover's self-reported
+  verdict**, and hold its every verdict to "a test that passes either way proves nothing."
+- **Brief the implementer too** — have it state which invariant each test pins, and nothing
+  further: that statement is its whole coverage duty, and the claims will be independently
+  mutated, not re-read. Have it commit before the prover starts, and relay a dirty-worktree
+  refusal back to it rather than waiving the gate — the prover can't commit on its behalf.
+- **Never brief the implementer to break source to watch a test fail** — no mutating, reverting,
+  stubbing or perturbing, wherever the mutant lives; a path-scoped ban ("don't touch
+  `.mutation/`") is not this ban, since one told to prove its tests fail hand-rolls mutants under
+  `/tmp` and satisfies it exactly. Test-first ordering is the sanctioned alternative — afterwards
+  only a mutant produces the unfixed behaviour.
+- **Arbitrate survivors like any other review finding** — a `SURVIVED` verdict is one to weigh,
+  not an automatic block. Relay what's worth fixing as the invariant that needs a test, never as a
+  mutant to re-run, and waive the rest explicitly or the prover re-reports them every round.
+- **A timed-out run keeps its verdicts, so replacing a wedged prover forfeits nothing.** A hang
+  the runner blames on the suite is a project defect for the implementer, not a mutant to rewrite.
+- **No `harness/mutation/config.json` means the project is configured for no mutation testing** —
+  the prover notes it and the review proceeds; never brief a bootstrap or a by-hand mutation into
+  a review, since opting a project in is separate owner-directed work against `code-mutant`'s
+  `scaffold/harness.md`.

@@ -1,11 +1,11 @@
 ---
 name: prove
-description: Mutation-prove the implementer's test-coverage claims for a pending review — author real mutants against the project's mutation harness, run them, and report survivors as blocking findings. Reviewer-facing only; invoked inside the review→refine loop, never by the implementer. Invoke via /code-mutant:prove.
+description: Mutation-prove the implementer's test-coverage claims for a pending review — author real mutants against the project's mutation harness, run them, and report survivors as blocking findings. Prover-facing only; invoked inside the review→refine loop, never by the implementer. Invoke via /code-mutant:prove.
 ---
 
 # Prove
 
-You (the reviewer) author and run every mutant — the implementer never mutates its own claims.
+You (the prover) author and run every mutant — the implementer never mutates its own claims.
 
 ## 0. Refusals stop the review; a missing harness doesn't
 

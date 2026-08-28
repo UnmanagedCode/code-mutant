@@ -1,7 +1,7 @@
 # Scaffold a mutation-verification harness
 
 Build a project-local mutation-testing harness at `harness/mutation/`, driven by the shared
-`code-mutant` runner (`mutate.mjs`) as a sibling project — so a reviewer can later run
+`code-mutant` runner (`mutate.mjs`) as a sibling project — so a prover can later run
 `/code-mutant:prove` against this project. This is a one-time bootstrap.
 
 ## What to build

@@ -1,6 +1,6 @@
 {
   "name": "code-mutant",
-  "description": "Mutation-verified coverage proving — a reviewer-driven mutation-testing harness for code-conductor.",
+  "description": "Mutation-verified coverage proving — a prover-driven mutation-testing harness for code-conductor.",
   "version": "0.1.0",
   "author": { "name": "UnmanagedCode" },
   "license": "AGPL-3.0-or-later"

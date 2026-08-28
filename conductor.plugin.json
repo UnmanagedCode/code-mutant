@@ -7,14 +7,14 @@
     {
       "slug": "mutation-harness",
       "name": "Mutation-verification harness scaffold",
-      "description": "Scaffold a per-project mutation-testing harness so a reviewer can later mutation-prove coverage claims via /code-mutant:prove",
+      "description": "Scaffold a per-project mutation-testing harness so a prover can later mutation-prove coverage claims via /code-mutant:prove",
       "scope": "project",
       "scaffold": { "file": "scaffold/harness.md" }
     },
     {
       "slug": "demand-mutation-verified",
       "name": "Demand mutation-verified coverage",
-      "description": "Brief the reviewer to mutation-prove the implementer's coverage claims before landing, rather than trusting its report",
+      "description": "Spawn a dedicated prover to mutation-prove the implementer's coverage claims before landing, rather than trusting its report",
       "scope": "conductor",
       "file": "conventions/demand-mutation-verified.md"
     }

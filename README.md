@@ -6,15 +6,34 @@ by-hand practice in this workspace: revert a fix in an isolated copy, confirm th
 to cover it actually fails, and treat "passes either way" as proof the claim is false. The plugin
 turns the by-hand parts (anchoring an edit, applying it, running the suite, parsing the output,
 restoring the file, re-running prior rounds' mutants) into one shared runner, and retires the
-by-hand version: a reviewer with no harness reports the absence and proceeds — it never reverts a
+by-hand version: a prover with no harness reports the absence and proceeds — it never reverts a
 fix by hand in a copy of its own. The judgment half — which invariant is worth attacking, whether a
 survivor blocks landing — stays with the agents.
 
-**Division of labour:** the **reviewer** authors and runs every mutant against the **implementer**'s
+**Division of labour:** the **prover** authors and runs every mutant against the **implementer**'s
 coverage claims; the implementer never mutates its own claims, because left to itself it only ever
-picks mutants its own tests already catch. The **conductor** arbitrates survivors like any other
-review finding — relay what's worth fixing, waive the rest explicitly. Findings only ever flow
-upward; the implementer receives no mutants, only a report.
+picks mutants its own tests already catch — and, being the same party, it proves nothing the
+prover's run won't. The **conductor** arbitrates survivors like any other review finding — relay
+what's worth fixing, waive the rest explicitly. Findings only ever flow upward; the implementer
+receives no mutants, only a report.
+
+**The prover is its own worker**, spawned to mutation-prove and nothing else — never the
+implementer, and never a lens reviewer (correctness, security, …) with proving bolted onto its
+brief. It is a role, not a playbook stage: no playbook declares a tester stage, so the conductor
+spawns it into whichever slot the review stage provides (`relay` and `solo` both take
+`workers: many` there) or into `freeform`. Unlike the inspect-only reviewers it runs beside, it
+**writes to the implementer's worktree** — under `in-place` isolation the mutant is applied there
+and byte-restored after each measurement — so exactly one prover runs per round: the runner's
+concurrency guard (`lib/occupancy.mjs`) lives inside a single runner process, so two concurrent
+`/code-mutant:prove` runs would mutate one tree with neither detecting the other.
+
+The implementer's own coverage duty is to *state*, not to prove: name which invariant each test
+pins, and stop there. It is never briefed to break source to watch a test fail — no mutating,
+reverting or stubbing, wherever the mutant would live, since a hand-rolled mutant under `/tmp`
+evades a path-scoped `.mutation/` ban while proving nothing the prover's run won't, and a
+hand-rolled run that hangs leaves the tree mutated. Test-first ordering — write the test, watch it
+fail, then write the code — is the only implementer-side failure evidence there is; after the fact
+no unfixed behaviour remains to run against, only a mutant.
 
 Contributions-only — no backend, no frontend, no MCP server. Enabling it never starts a process.
 
@@ -30,18 +49,19 @@ Contributions-only — no backend, no frontend, no MCP server. Enabling it never
   project actually merges into, and adds `.mutation/` to the project's own `.gitignore`. It creates
   neither a mutant catalog nor a canary — both are per-review/per-run.
 - **`demand-mutation-verified`** (`scope: "conductor"`) — the plugin's only prompt fragment. Briefs
-  the conductor to have the reviewer mutation-prove coverage claims via `/code-mutant:prove` rather
-  than trust the implementer's report, and to treat a project with no harness as configured for none.
+  the conductor to spawn a dedicated prover to mutation-prove coverage claims via
+  `/code-mutant:prove` rather than trust the implementer's report, and to treat a project with no
+  harness as configured for none.
 - **`claudePlugin: "."`** — this project root doubles as the Claude Code plugin root, so
   `skills/prove/SKILL.md` resolves as `/code-mutant:prove` for every worker, whether or not the
   project it's invoked in was ever scaffolded.
 
 ## The `/code-mutant:prove` skill
 
-Reviewer-facing, invoked inside the review→refine loop (never by the implementer). Enumerates the
+Prover-facing, invoked inside the review→refine loop (never by the implementer). Enumerates the
 implementer's coverage claims, clears all three trust gates, re-runs the review's existing mutant
 catalog for regressions, lists un-covered diff hunks via `candidates` (it
-lists, the reviewer targets — no exhaustive one-per-hunk sweep), authors one minimal mutant per
+lists, the prover targets — no exhaustive one-per-hunk sweep), authors one minimal mutant per
 claim/candidate, runs narrow in the project's configured isolation mode, and reports
 survivors as findings the conductor can arbitrate without reading project code. Full flow:
 `skills/prove/SKILL.md`.
@@ -184,7 +204,7 @@ records' full shapes are in [`mutants.schema.md`](mutants.schema.md#the-clean-tr
 
 ## The mutant catalog
 
-Per-review, gitignored, lives at `.mutation/mutants.json`, owned by the reviewer. The full
+Per-review, gitignored, lives at `.mutation/mutants.json`, owned by the prover. The full
 per-entry field schema is specified in [`mutants.schema.md`](mutants.schema.md) — that file is the
 authoritative format; this README only covers what the catalog is for.
 
@@ -258,7 +278,7 @@ subcommand is *for*.
   here, not a refusal. `--learn` reports the failing set for a single ad-hoc mutation without
   grading, the one-off case `run --learn` batches over a whole catalog.
 - **`candidates --base <branch>`** — lists diff hunks (relative to `<branch>`) that no catalog
-  mutant currently covers. Lists only; it never mutates anything — the reviewer picks which hunks
+  mutant currently covers. Lists only; it never mutates anything — the prover picks which hunks
   are invariant-bearing and authors mutants for them via `run`/a catalog edit. Needs no harness.
 
 **Shared flags:** `--copy` / `--in-place` override `config.json`'s `isolation` for one invocation.
@@ -266,7 +286,7 @@ subcommand is *for*.
 machine report on stdout instead of the printed matrix; either way `run` and `probe` always write
 the same object to `.mutation/results/<runId>.json`, and refuse outright if `.mutation/` isn't
 gitignored. Exit code is non-zero whenever any un-waived mutant survived — a signal a conductor can
-gate on, unlike a self-reported reviewer verdict — and distinguishes a failed gate, a no-verdict
+gate on, unlike a self-reported prover verdict — and distinguishes a failed gate, a no-verdict
 run, and an unconfigured project from a clean sweep; the full table is in
 [`mutants.schema.md`](mutants.schema.md#exit-codes).
 
