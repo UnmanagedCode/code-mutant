@@ -10,6 +10,7 @@ import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { listCandidates, mergeBase, parseHunks } from '../lib/candidates.mjs';
+import { gitCapture } from '../lib/git.mjs';
 import { ExitCode } from '../lib/report.mjs';
 import { runCli } from './helpers/cli.mjs';
 import { git, guardFiles, makeRepo, oversizeText, write } from './helpers/tmp-repo.mjs';
@@ -219,6 +220,13 @@ describe('a base far behind the working tree', () => {
   test('a diff larger than 1 MiB is listed, not refused', () => {
     const repo = repoWithLargeDiff('cand-large');
     try {
+      // The premise, measured rather than assumed: a fixture that drifted under
+      // the default bound would leave this test passing while pinning nothing.
+      assert.ok(
+        gitCapture(repo.root, ['diff', '--unified=0', 'base']).length > 1024 * 1024,
+        'the fixture diff must exceed 1 MiB or this test proves nothing',
+      );
+
       const listing = listCandidates({ repoRoot: repo.root, base: 'base', mutants: [] });
 
       assert.ok(listing.hunkCount > 0, 'the large diff produced hunks');
@@ -282,6 +290,19 @@ describe('base resolution across invocations', () => {
       assert.match(result.stderr, /--base <branch>/);
       assert.match(result.stderr, /harness\/mutation\/config\.json/);
       assert.match(result.stderr, /baseBranch/);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a harness-less repo with no --base gets the usage refusal, not the no-harness notice', async () => {
+    // The user forgot a flag; they did not ask about mutation opt-in. Exit 6
+    // means "nothing ran and nothing is claimed", which this is not.
+    const repo = makeRepo({ files: guardFiles(), config: null, label: 'cand-no-harness' });
+    try {
+      const result = await runCli(['candidates'], { cwd: repo.root });
+      assert.equal(result.exitCode, ExitCode.USAGE);
+      assert.match(result.stderr, /--base <branch>/);
+      assert.match(result.stderr, /baseBranch/);
+      assert.doesNotMatch(result.stdout, /not configured for mutation testing/);
     } finally { repo.cleanup(); }
   });
 

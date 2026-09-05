@@ -22,7 +22,7 @@ import { gitCapture } from '../lib/git.mjs';
 import { GateOutcome, execute } from '../lib/runner.mjs';
 import { ExitCode, exitCodeFor, formatReport, toJson } from '../lib/report.mjs';
 import { childEnv } from './helpers/cli.mjs';
-import { git, guardFiles, makeRepo, oversizeText, write } from './helpers/tmp-repo.mjs';
+import { GUARD_SOURCE, git, guardFiles, makeRepo, oversizeText, write } from './helpers/tmp-repo.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MUTATE = path.join(HERE, '..', 'mutate.mjs');
@@ -251,13 +251,39 @@ describe('empty-diff-vs-base gate (run only)', () => {
   test('the gate record names the base distance', () => {
     const repo = repoAheadOfBase('base-distance', { fileBytes: 4_000 });
     try {
+      // A second file, edited rather than added, so shortstat renders "files
+      // changed" and "insertions(+)" plural beside a singular "deletion(-)" --
+      // the three word forms the record has to read back out of one line.
+      write(repo.root, 'src/guard.mjs', GUARD_SOURCE.replace("return true;", 'return true; // touched'));
+      git(repo.root, ['add', '-A']);
+      git(repo.root, ['commit', '-qm', 'a second, edited file']);
+
       const gate = checkBaseDiffGate(repo.root, 'upstream-base');
       const lines = oversizeText(4_000).split('\n').length - 1;
 
       assert.deepEqual(gate.distance, {
-        commitsAhead: 1, filesChanged: 1, insertions: lines, deletions: 0,
+        commitsAhead: 2, filesChanged: 2, insertions: lines + 1, deletions: 1,
       });
-      assert.match(gate.detail, /1 commit\(s\) ahead/);
+      assert.match(gate.detail, /2 commit\(s\) ahead/);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a committed binary change reads as committed work', () => {
+    const repo = repoWithBase('base-binary');
+    try {
+      // Binary content carries no lines for shortstat to count, so a gate that
+      // decided emptiness from the line counts would refuse a real change here.
+      write(repo.root, 'assets/blob.bin', Buffer.from([0, 1, 2, 3, 0, 255, 7, 0]));
+      git(repo.root, ['add', '-A']);
+      git(repo.root, ['commit', '-qm', 'a binary asset']);
+      git(repo.root, ['branch', 'upstream-base', 'HEAD~1']);
+      write(repo.root, 'assets/blob.bin', Buffer.from([0, 9, 9, 9, 0, 1, 1, 0, 4]));
+      git(repo.root, ['add', '-A']);
+      git(repo.root, ['commit', '-qm', 'the binary asset changes']);
+
+      const gate = checkBaseDiffGate(repo.root, 'upstream-base');
+      assert.equal(gate.outcome, GateOutcome.PASSED);
+      assert.equal(gate.distance.filesChanged, 1);
     } finally { repo.cleanup(); }
   });
 
@@ -279,10 +305,18 @@ describe('empty-diff-vs-base gate (run only)', () => {
     const repo = repoAheadOfBase('base-run-e2e');
     try {
       const result = spawnSync(process.execPath, [
-        MUTATE, 'run', '--id', 'm1', '--base', 'upstream-base', '--copy', '--json',
+        MUTATE, 'run', '--id', 'm1', '--base', 'upstream-base', '--copy',
       ], { cwd: repo.root, encoding: 'utf8', env: childEnv() });
 
       assert.notEqual(result.status, ExitCode.USAGE, `exit ${result.status}: ${result.stderr}`);
+
+      // The matrix a human reads, not just the field a consumer parses: which
+      // base this invocation resolved, and how far behind it is, is what makes a
+      // mismatch with `candidates`' own base visible instead of silent.
+      assert.match(
+        result.stdout,
+        /base-diff\s+PASSED\s+vs upstream-base\s+upstream-base \(merge-base [0-9a-f]{12}, 1 commit\(s\) ahead, 1 file\(s\), \+\d+\/-0\)/,
+      );
 
       const resultsDir = path.join(repo.root, '.mutation', 'results');
       assert.ok(existsSync(resultsDir), `no results directory: ${result.stderr}`);

@@ -282,8 +282,9 @@ subcommand is *for*.
   `config.json`'s `baseBranch`) that no catalog mutant currently covers. Lists only; it never
   mutates anything — the prover picks which hunks are invariant-bearing and authors mutants for
   them via `run`/a catalog edit. Needs no harness when `--base` is given. Unlike the gate, it does
-  read the whole diff, so a base far enough behind to exceed the 256 MiB capture limit is refused —
-  the refusal names the distance and tells you to scope by hand with `git diff <base>...HEAD`.
+  read the whole diff, so a base far enough behind to exceed the capture limit (`GIT_MAX_BUFFER`,
+  `lib/git.mjs`) is refused — the refusal names the distance and tells you to scope by hand with
+  `git diff <base>...HEAD`.
 
 **Shared flags:** `--copy` / `--in-place` override `config.json`'s `isolation` for one invocation.
 `--json` puts the

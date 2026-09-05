@@ -510,13 +510,26 @@ async function commandValidate(flags, log) {
   return validateExitCode(report);
 }
 
+// The configured base, or null when this project has no harness at all. The
+// absence is not raised here: "which base?" is not a question about mutation
+// opt-in, and the no-harness notice owns its own exit code for a run that made
+// no claim -- a forgotten flag is a plain usage error and must read as one.
+function configuredBaseBranch(repoRoot, log) {
+  try {
+    return loadConfig({ repoRoot, warn: (message) => log(`note: ${message}`) }).baseBranch;
+  } catch (err) {
+    if (err instanceof NoHarnessError) return null;
+    throw err;
+  }
+}
+
 async function commandCandidates(flags, log) {
   const repoRoot = findRepoRoot(process.cwd());
   // `--base` alone keeps working in a repo with no harness at all, which is why
   // config is only consulted when the flag is absent -- but when it is absent,
   // baseBranch is the single source of truth `run` already reads, so the two
   // commands cannot silently disagree by default.
-  const base = flags['--base'] ?? loadConfig({ repoRoot, warn: (message) => log(`note: ${message}`) }).baseBranch;
+  const base = flags['--base'] ?? configuredBaseBranch(repoRoot, log);
   if (!base) {
     throw new Error(
       'candidates needs a base: pass --base <branch>, or set "baseBranch" in harness/mutation/config.json',

@@ -272,9 +272,12 @@ finding can be pointed at exactly the commit it was found against.
     cleanTree: { outcome: "passed"|"failed", code: "dirty-tree"|null, dirty, allowedDirty, detail },
     baseDiff:  { outcome: "passed"|"failed"|"not-established",
                  code: "empty-diff-vs-base"|"base-unresolvable"|"base-diff-unreadable"|null,
-                 base, currentBranch, mergeBase, detail,
-                 distance: { commitsAhead, filesChanged, insertions, deletions }|null },   // `run` only;
-                                                         // distance null when the diff is empty or unreadable
+                 base, currentBranch, detail,
+                 mergeBase, distance: { commitsAhead, filesChanged, insertions, deletions }|null },
+                                                         // `run` only. mergeBase and distance appear only once a
+                                                         // merge base resolved: a not-established or
+                                                         // base-unresolvable record carries NEITHER KEY, and
+                                                         // distance is null when the diff is empty or unreadable
     baseline: { outcome: "passed"|"failed", command, counts: {passed,failed,skipped,ran}|null, exitCode,
                 failedTests: [string]|null, durationMs, timedOut, detail },   // failedTests: null when nothing is nameable
                                                          // (exit-code grade, or a FAILED baseline with no parsed
