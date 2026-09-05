@@ -76,6 +76,14 @@ export function makeRepo({
   };
 }
 
+// Content large enough that any diff carrying it crosses execFileSync's 1 MiB
+// default maxBuffer -- the bound a far-behind base died on. Generated rather
+// than committed as a fixture file, so no megabyte blob lives in this repo.
+export function oversizeText(bytes = 1_500_000) {
+  const line = `${'x'.repeat(78)}\n`;
+  return line.repeat(Math.ceil(bytes / line.length));
+}
+
 // A passing two-test node suite plus the module it exercises. The shape most of
 // the integration tests need: one invariant with a sibling test in the same file,
 // which is what makes the narrowing policy observable.

@@ -50,7 +50,9 @@ proven.
 
 ## 4. Find candidates
 
-Run `candidates` against the review's base branch to list diff hunks no catalog mutant covers yet.
+Run `candidates` against the review's base branch — `--base`, else `config.json`'s `baseBranch`,
+resolved independently of `run`'s, so override both or neither — to list diff hunks no catalog
+mutant covers yet.
 **It lists, you target** — round 1 the catalog is empty so the list is the whole diff; don't
 mutate one-per-hunk, that's an exhaustive sweep, not this practice. Select the hunks you judge
 invariant-bearing — the ones a test claims to pin.

@@ -144,6 +144,7 @@ shape](#the-shape-of-an-ungraded-result)) — or a usage error before the run:
 | `dirty-tree` | Trust gate, `baseline`/`run` (before baseline and canary): the worktree has uncommitted or untracked-and-not-gitignored changes. `--allow-dirty` overrides it; `probe` only warns. See [The clean-tree gate](#the-clean-tree-gate). |
 | `empty-diff-vs-base` | Trust gate, `run` only: `baseBranch` is configured, distinct from the branch HEAD is on, and there is no diff against it — nothing committed to mutate. See [The clean-tree gate](#the-clean-tree-gate). |
 | `base-unresolvable` | Trust gate, `run` only: `baseBranch`/`--base` does not resolve to a real branch or commit. A gate failure, not a process exit — a typo'd branch name must read the same as any other trust-gate failure. |
+| `base-diff-unreadable` | Trust gate, `run` only: git could not be read for the base comparison (its output exceeded the capture limit, or git itself failed). Also a gate failure rather than a process exit, so the report and its results file are still written. |
 | — | Writing under `.mutation/` when it is not gitignored is a **hard stop** (exit 4), not a warning: this run would otherwise leave visible untracked files in a worktree it does not own and cannot commit a fix to. |
 
 ## Pre-flight validation
@@ -200,9 +201,12 @@ canary:
   either: no `baseBranch` is configured, or it names the branch HEAD is already on (comparing a branch
   to itself would refuse every run made directly on that branch, which is a false refusal, not a
   finding). Only when `baseBranch` is configured AND distinct does an empty diff become the hard
-  `empty-diff-vs-base` refusal. A `baseBranch`/`--base` that does not resolve to a real branch or
-  commit is its own `base-unresolvable` gate failure, not a process exit -- every gate failure
-  produces the same structured record.
+  `empty-diff-vs-base` refusal. Emptiness is read from `git diff --shortstat`, whose output does not
+  grow with the distance to the base, so the gate costs the same against a base one commit behind and
+  one several hundred behind; the record carries that distance as `distance`. A `baseBranch`/`--base`
+  that does not resolve to a real branch or commit is its own `base-unresolvable` gate failure, and
+  git being unreadable is `base-diff-unreadable` -- neither is a process exit, because every gate
+  failure produces the same structured record.
 
 Neither check relaxes the restore contract: no git operation is ever used for restore, and copy mode
 still copies the working tree rather than cloning from HEAD. The precondition can be violated (dirty,
@@ -266,8 +270,14 @@ finding can be pointed at exactly the commit it was found against.
   reproducible:  boolean,         // false only when --allow-dirty was used to proceed on a dirty tree
   gates: {
     cleanTree: { outcome: "passed"|"failed", code: "dirty-tree"|null, dirty, allowedDirty, detail },
-    baseDiff:  { outcome: "passed"|"failed"|"not-established", code: "empty-diff-vs-base"|"base-unresolvable"|null,
-                 base, currentBranch, mergeBase, detail },   // `run` only
+    baseDiff:  { outcome: "passed"|"failed"|"not-established",
+                 code: "empty-diff-vs-base"|"base-unresolvable"|"base-diff-unreadable"|null,
+                 base, currentBranch, detail,
+                 mergeBase, distance: { commitsAhead, filesChanged, insertions, deletions }|null },
+                                                         // `run` only. mergeBase and distance appear only once a
+                                                         // merge base resolved: a not-established or
+                                                         // base-unresolvable record carries NEITHER KEY, and
+                                                         // distance is null when the diff is empty or unreadable
     baseline: { outcome: "passed"|"failed", command, counts: {passed,failed,skipped,ran}|null, exitCode,
                 failedTests: [string]|null, durationMs, timedOut, detail },   // failedTests: null when nothing is nameable
                                                          // (exit-code grade, or a FAILED baseline with no parsed
