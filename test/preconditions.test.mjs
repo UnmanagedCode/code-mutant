@@ -10,16 +10,19 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, readFileSync, readdirSync, utimesSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { loadAdapter } from '../lib/adapters/index.mjs';
 import { loadConfig } from '../lib/config.mjs';
+import { checkBaseDiffGate } from '../lib/gates.mjs';
+import { gitCapture } from '../lib/git.mjs';
 import { GateOutcome, execute } from '../lib/runner.mjs';
 import { ExitCode, exitCodeFor, formatReport, toJson } from '../lib/report.mjs';
-import { git, guardFiles, makeRepo, write } from './helpers/tmp-repo.mjs';
+import { childEnv } from './helpers/cli.mjs';
+import { git, guardFiles, makeRepo, oversizeText, write } from './helpers/tmp-repo.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MUTATE = path.join(HERE, '..', 'mutate.mjs');
@@ -178,6 +181,116 @@ describe('empty-diff-vs-base gate (run only)', () => {
       assert.equal(report.gates.baseDiff.code, 'base-unresolvable');
       assert.deepEqual(report.results, []);
       assert.equal(exitCodeFor(report), ExitCode.GATE_FAILED);
+    } finally { repo.cleanup(); }
+  });
+
+  // A base a few hundred commits behind is ordinary, and its diff is megabytes:
+  // reading the whole thing to answer "is it empty?" is what turned distance
+  // into `spawnSync git ENOBUFS`, exit 4, and no result file at all.
+  function repoAheadOfBase(label, { fileBytes = 1_500_000 } = {}) {
+    const repo = repoWithBase(label);
+    git(repo.root, ['branch', 'upstream-base']);
+    write(repo.root, 'docs/generated.txt', oversizeText(fileBytes));
+    git(repo.root, ['add', '-A']);
+    git(repo.root, ['commit', '-qm', 'a large committed change']);
+    return repo;
+  }
+
+  test('a base whose diff exceeds 1 MiB passes the gate instead of throwing', () => {
+    const repo = repoAheadOfBase('base-huge-diff');
+    try {
+      // The premise, measured rather than assumed: this diff really is past the
+      // execFileSync default the crash came from.
+      assert.ok(
+        gitCapture(repo.root, ['diff', 'upstream-base']).length > 1024 * 1024,
+        'the fixture diff must exceed 1 MiB or this test proves nothing',
+      );
+
+      const gate = checkBaseDiffGate(repo.root, 'upstream-base');
+      assert.equal(gate.outcome, GateOutcome.PASSED);
+      assert.equal(gate.code, null);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a stat-only touch on an identical file does not read as committed work', () => {
+    const repo = repoWithBase('base-stat-touch');
+    try {
+      git(repo.root, ['branch', 'upstream-base']);
+      // Same bytes, new mtime: the emptiness answer must come from comparing
+      // CONTENT, so stat churn alone can never manufacture "there is work here".
+      const stamp = new Date(Date.now() + 5_000);
+      utimesSync(path.join(repo.root, 'src/guard.mjs'), stamp, stamp);
+
+      const gate = checkBaseDiffGate(repo.root, 'upstream-base');
+      assert.equal(gate.outcome, GateOutcome.FAILED);
+      assert.equal(gate.code, 'empty-diff-vs-base');
+      assert.equal(gate.distance, null);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a committed change with no changed lines still reads as committed work', () => {
+    const repo = repoWithBase('base-mode-only');
+    try {
+      git(repo.root, ['branch', 'upstream-base']);
+      chmodSync(path.join(repo.root, 'src/guard.mjs'), 0o755);
+      git(repo.root, ['add', '-A']);
+      git(repo.root, ['commit', '-qm', 'mode only']);
+
+      // A mode change moves no lines: emptiness must be read from whether git
+      // reported a change at all, never from the insertion/deletion counts, or
+      // this run would be refused for having "nothing to mutate".
+      const gate = checkBaseDiffGate(repo.root, 'upstream-base');
+      assert.equal(gate.outcome, GateOutcome.PASSED);
+      assert.deepEqual(
+        { insertions: gate.distance.insertions, deletions: gate.distance.deletions },
+        { insertions: 0, deletions: 0 },
+      );
+    } finally { repo.cleanup(); }
+  });
+
+  test('the gate record names the base distance', () => {
+    const repo = repoAheadOfBase('base-distance', { fileBytes: 4_000 });
+    try {
+      const gate = checkBaseDiffGate(repo.root, 'upstream-base');
+      const lines = oversizeText(4_000).split('\n').length - 1;
+
+      assert.deepEqual(gate.distance, {
+        commitsAhead: 1, filesChanged: 1, insertions: lines, deletions: 0,
+      });
+      assert.match(gate.detail, /1 commit\(s\) ahead/);
+    } finally { repo.cleanup(); }
+  });
+
+  test('an unreadable base diff is a structured gate failure, not a process exit', () => {
+    const repo = repoAheadOfBase('base-unreadable', { fileBytes: 4_000 });
+    try {
+      // A capture bound nothing can fit under, so the gate meets a real read
+      // failure rather than a simulated one.
+      const gate = checkBaseDiffGate(repo.root, 'upstream-base', { maxBuffer: 1 });
+
+      assert.equal(gate.outcome, GateOutcome.FAILED);
+      assert.equal(gate.code, 'base-diff-unreadable');
+      assert.match(gate.detail, /git diff --shortstat/, 'the record names the argv that could not be read');
+      assert.equal(exitCodeFor({ gates: { baseDiff: gate }, results: [] }), ExitCode.GATE_FAILED);
+    } finally { repo.cleanup(); }
+  });
+
+  test('a run against a far-behind base always writes a result file', () => {
+    const repo = repoAheadOfBase('base-run-e2e');
+    try {
+      const result = spawnSync(process.execPath, [
+        MUTATE, 'run', '--id', 'm1', '--base', 'upstream-base', '--copy', '--json',
+      ], { cwd: repo.root, encoding: 'utf8', env: childEnv() });
+
+      assert.notEqual(result.status, ExitCode.USAGE, `exit ${result.status}: ${result.stderr}`);
+
+      const resultsDir = path.join(repo.root, '.mutation', 'results');
+      assert.ok(existsSync(resultsDir), `no results directory: ${result.stderr}`);
+      const [file] = readdirSync(resultsDir);
+      const report = JSON.parse(readFileSync(path.join(resultsDir, file), 'utf8'));
+
+      assert.equal(report.gates.baseDiff.outcome, GateOutcome.PASSED);
+      assert.equal(report.gates.baseDiff.distance.commitsAhead, 1);
     } finally { repo.cleanup(); }
   });
 });

@@ -46,7 +46,7 @@ Build a project-local mutation-testing harness at `harness/mutation/`, driven by
 4. **Set `baseBranch`** to the branch this project actually merges into (`main`, `master`, or
    whatever its real integration branch is). Left unset, `run`'s empty-diff-vs-base gate reports
    `not-established` and checks nothing, so a review of a branch with no committed work would read
-   as a clean sweep.
+   as a clean sweep, and `candidates` has no base to fall back on.
 5. **Scope `baselineCommand` across the project's test files, not one subdirectory.** The canary
    gate injects a guaranteed-failing test into a candidate file, in this order: the target a previous
    run journalled, then the scopes this run's own mutants narrow to, then tracked files matching the

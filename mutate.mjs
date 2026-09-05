@@ -18,7 +18,7 @@ import process from 'node:process';
 import { readFileSync } from 'node:fs';
 
 import { AdapterError, loadAdapter } from './lib/adapters/index.mjs';
-import { listCandidates } from './lib/candidates.mjs';
+import { describeDistance, listCandidates } from './lib/candidates.mjs';
 import {
   CatalogError, assertMutationDirIgnored, loadCatalog, requireCatalog, selectById, writeResults,
 } from './lib/catalog.mjs';
@@ -45,7 +45,7 @@ USAGE
   node mutate.mjs probe --patch-file <path>   [--learn] [--expect-fail <test> ...]
                         [--expect-pass <test> ...] [--copy|--in-place] [--json]
   node mutate.mjs probe --id <id>             [--copy|--in-place] [--json]
-  node mutate.mjs candidates --base <branch>  [--json]
+  node mutate.mjs candidates [--base <branch>] [--json]
 
 COMMANDS
   baseline     Run the trust gates and stop: clean-tree, baseline, canary.
@@ -91,9 +91,11 @@ FLAGS
                      with a fixed port, a fixed temp/data dir, a shared DB or
                      in-place fixture, a shared write cache, or absolute-path
                      dependence. "preserve" paths are symlinked, so shared.
-  --base <branch>    run: overrides config.json's baseBranch for the
-                     empty-diff-vs-base gate. candidates: base branch/commit
-                     (required there; no config fallback).
+  --base <branch>    Overrides config.json's baseBranch, for run's
+                     empty-diff-vs-base gate and for the diff candidates lists.
+                     Each invocation resolves its own base and prints it with
+                     its distance, so overriding one command and not the other
+                     is visible rather than silent.
   --allow-dirty      baseline/run: proceed despite a dirty worktree instead of
                      refusing. Every verdict from that invocation is labelled
                      non-reproducible, in both the matrix and --json.
@@ -510,8 +512,16 @@ async function commandValidate(flags, log) {
 
 async function commandCandidates(flags, log) {
   const repoRoot = findRepoRoot(process.cwd());
-  const base = flags['--base'];
-  if (!base) throw new Error('candidates needs --base <branch>');
+  // `--base` alone keeps working in a repo with no harness at all, which is why
+  // config is only consulted when the flag is absent -- but when it is absent,
+  // baseBranch is the single source of truth `run` already reads, so the two
+  // commands cannot silently disagree by default.
+  const base = flags['--base'] ?? loadConfig({ repoRoot, warn: (message) => log(`note: ${message}`) }).baseBranch;
+  if (!base) {
+    throw new Error(
+      'candidates needs a base: pass --base <branch>, or set "baseBranch" in harness/mutation/config.json',
+    );
+  }
 
   const catalog = loadCatalog(repoRoot);
   const listing = listCandidates({ repoRoot, base, mutants: catalog.mutants });
@@ -522,7 +532,7 @@ async function commandCandidates(flags, log) {
   }
 
   const lines = [
-    `candidates vs ${base} (merge-base ${listing.mergeBase.slice(0, 12)}, working tree included)`,
+    `candidates vs ${describeDistance(base, listing.mergeBase, listing.distance)}, working tree included`,
     `${listing.hunkCount} hunk(s): ${listing.covered.length} covered by ${catalog.mutants.length} catalog mutant(s), ${listing.uncovered.length} uncovered`,
     '',
     listing.advisory,

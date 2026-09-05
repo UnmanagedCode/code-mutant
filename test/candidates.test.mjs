@@ -10,8 +10,9 @@ import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { listCandidates, mergeBase, parseHunks } from '../lib/candidates.mjs';
+import { ExitCode } from '../lib/report.mjs';
 import { runCli } from './helpers/cli.mjs';
-import { git, guardFiles, makeRepo } from './helpers/tmp-repo.mjs';
+import { git, guardFiles, makeRepo, oversizeText, write } from './helpers/tmp-repo.mjs';
 
 // A repo with a `base` branch, then changes on top of it: two separate hunks in
 // one file plus a new file.
@@ -197,6 +198,101 @@ describe('base resolution', () => {
       assert.throws(
         () => mergeBase(repo.root, 'no-such-branch'),
         /cannot find a merge base between "no-such-branch" and HEAD/,
+      );
+    } finally { repo.cleanup(); }
+  });
+});
+
+// `candidates` genuinely needs the diff TEXT -- it has hunks to parse, not a
+// boolean to answer -- so distance is paid for here rather than avoided. What it
+// owes past the capture bound is a refusal an operator can act on.
+describe('a base far behind the working tree', () => {
+  function repoWithLargeDiff(label) {
+    const repo = makeRepo({ files: guardFiles(), label });
+    git(repo.root, ['branch', 'base']);
+    write(repo.root, 'docs/generated.txt', oversizeText());
+    git(repo.root, ['add', '-A']);
+    git(repo.root, ['commit', '-qm', 'a large committed change']);
+    return repo;
+  }
+
+  test('a diff larger than 1 MiB is listed, not refused', () => {
+    const repo = repoWithLargeDiff('cand-large');
+    try {
+      const listing = listCandidates({ repoRoot: repo.root, base: 'base', mutants: [] });
+
+      assert.ok(listing.hunkCount > 0, 'the large diff produced hunks');
+      assert.ok(
+        listing.uncovered.some((hunk) => hunk.file === 'docs/generated.txt'),
+        'the file that makes the diff large is among the listed hunks',
+      );
+    } finally { repo.cleanup(); }
+  });
+
+  test('a diff past the hard bound refuses legibly', () => {
+    const repo = repoWithLargeDiff('cand-refuse');
+    try {
+      assert.throws(
+        // Under a bound the distance summary still fits, so the refusal has the
+        // numbers to hand -- which is the whole difference from an errno.
+        () => listCandidates({ repoRoot: repo.root, base: 'base', mutants: [], maxBuffer: 1024 }),
+        (err) => {
+          assert.match(err.message, /base/, 'names the base it resolved against');
+          assert.match(err.message, /1 commit\(s\) ahead/, 'names how far behind that base is');
+          assert.match(err.message, /1024-byte capture limit/, 'names the limit it hit');
+          assert.match(err.message, /git diff base\.\.\.HEAD/, 'names the workaround verbatim');
+          assert.doesNotMatch(err.message, /ENOBUFS/, 'an errno is not the story');
+          return true;
+        },
+      );
+    } finally { repo.cleanup(); }
+  });
+});
+
+describe('base resolution across invocations', () => {
+  // `run` reads config.baseBranch; `candidates` used to be structurally unable to
+  // see it, so a bare `candidates` compared against nothing while `run` compared
+  // against the configured base. One source, and the resolved base printed.
+  function repoWithConfiguredBase(label, config = { baseBranch: 'base' }) {
+    const repo = makeRepo({ files: guardFiles(), config, label });
+    git(repo.root, ['branch', 'base']);
+    write(repo.root, 'src/extra.mjs', 'export const extra = 1;\n');
+    git(repo.root, ['add', '-A']);
+    git(repo.root, ['commit', '-qm', 'committed work on top of the base']);
+    return repo;
+  }
+
+  test('candidates falls back to config.baseBranch when --base is omitted', async () => {
+    const repo = repoWithConfiguredBase('cand-config-base');
+    try {
+      const result = await runCli(['candidates', '--json'], { cwd: repo.root });
+      assert.equal(result.exitCode, 0, result.stderr);
+
+      const listing = JSON.parse(result.stdout);
+      assert.equal(listing.base, 'base');
+      assert.ok(listing.hunkCount > 0, 'it resolved a real base and diffed against it');
+    } finally { repo.cleanup(); }
+  });
+
+  test('candidates with neither --base nor a configured baseBranch refuses, naming both sources', async () => {
+    const repo = repoWithConfiguredBase('cand-no-base', {});
+    try {
+      const result = await runCli(['candidates'], { cwd: repo.root });
+      assert.equal(result.exitCode, ExitCode.USAGE);
+      assert.match(result.stderr, /--base <branch>/);
+      assert.match(result.stderr, /harness\/mutation\/config\.json/);
+      assert.match(result.stderr, /baseBranch/);
+    } finally { repo.cleanup(); }
+  });
+
+  test('the listing reports the resolved base and its distance', async () => {
+    const repo = repoWithConfiguredBase('cand-distance');
+    try {
+      const result = await runCli(['candidates'], { cwd: repo.root });
+      assert.equal(result.exitCode, 0, result.stderr);
+      assert.match(
+        result.stdout,
+        /candidates vs base \(merge-base [0-9a-f]{12}, 1 commit\(s\) ahead, 1 file\(s\), \+1\/-0\)/,
       );
     } finally { repo.cleanup(); }
   });

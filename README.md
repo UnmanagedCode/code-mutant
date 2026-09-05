@@ -83,7 +83,7 @@ project's repo (the *how* persists; see [Artifact lifetime](#artifact-lifetime) 
 | `timeoutMs` | `120000` | Per-*command* wall-clock **ceiling** — the fallback for any command with no like-for-like reference (the baseline, a narrow baseline, `setup`/`teardown`). A command killed at its deadline is never counted as a kill; which verdict it gets depends on which command hung — see the `TIMEOUT` row under [Verdicts](#verdicts). |
 | `hang` | `{factor: 10, floorMs: 10000}` | The adaptive deadline for a command that *does* have a reference — a mutant run, or a canary attempt — computed as `min(timeoutMs, max(floorMs, factor × referenceMs))`, so it is only ever tighter than `timeoutMs`, never looser. `factor: 0` disables it; `floorMs: 0` removes the floor. **The floor dominates for fast scopes:** at the defaults, any reference under 1 s yields exactly `floorMs`, so on a sub-second file scope `factor` has no effect and the deadline is a flat 10 s. Below `floorMs / factor`, tune `floorMs`, not `factor`. |
 | `jobs` | `1` | Concurrent mutants in `copy` mode — each worker owns one copy exclusively for its whole life, asserted per run (`lib/occupancy.mjs`), never merely intended. Clamped to 1 in `in-place` mode, with a note, since concurrent mutation of one tree is unsafe. `jobs > 1` also runs the *project's* suite that many times at once — see the unsafe-suite list under [Isolation modes](#isolation-modes). |
-| `baseBranch` | *unset* | The branch `run`'s empty-diff-vs-base gate compares the working tree against — normally whatever the project merges into. Unset, that gate reports `not-established` and checks nothing (see [Three trust gates](#three-trust-gates)). `--base` overrides it per invocation. |
+| `baseBranch` | *unset* | The branch `run`'s empty-diff-vs-base gate and `candidates` compare the working tree against — normally whatever the project merges into. Unset, that gate reports `not-established` and checks nothing (see [Three trust gates](#three-trust-gates)), and `candidates` refuses without `--base`. `--base` overrides it per invocation, on each command separately. A base far behind the tree is fine: the gate costs the same at any distance, and both commands print the resolved base with its distance (commits ahead, files, +/-). |
 | `setup` / `teardown` | *unset* | Optional commands run around every measured command — the escape hatch for a DB reset, a build step, or a service that needs starting, without requiring project-local code. |
 
 ### Adapters
@@ -249,7 +249,7 @@ node mutate.mjs probe --file <path> --anchor <text> --replace <text>
 node mutate.mjs probe --patch-file <path>   [--learn] [--expect-fail <test> ...]
                       [--expect-pass <test> ...] [--copy|--in-place] [--json]
 node mutate.mjs probe --id <id>             [--copy|--in-place] [--json]
-node mutate.mjs candidates --base <branch>  [--json]
+node mutate.mjs candidates [--base <branch>] [--json]
 ```
 
 `mutate.mjs --help` is authoritative for what each flag means; this section covers what each
@@ -278,9 +278,12 @@ subcommand is *for*.
   catalog entry re-run as authored (`--id`). The escape hatch: the clean-tree gate is a warning
   here, not a refusal. `--learn` reports the failing set for a single ad-hoc mutation without
   grading, the one-off case `run --learn` batches over a whole catalog.
-- **`candidates --base <branch>`** — lists diff hunks (relative to `<branch>`) that no catalog
-  mutant currently covers. Lists only; it never mutates anything — the prover picks which hunks
-  are invariant-bearing and authors mutants for them via `run`/a catalog edit. Needs no harness.
+- **`candidates [--base <branch>]`** — lists diff hunks (relative to `<branch>`, defaulting to
+  `config.json`'s `baseBranch`) that no catalog mutant currently covers. Lists only; it never
+  mutates anything — the prover picks which hunks are invariant-bearing and authors mutants for
+  them via `run`/a catalog edit. Needs no harness when `--base` is given. Unlike the gate, it does
+  read the whole diff, so a base far enough behind to exceed the 256 MiB capture limit is refused —
+  the refusal names the distance and tells you to scope by hand with `git diff <base>...HEAD`.
 
 **Shared flags:** `--copy` / `--in-place` override `config.json`'s `isolation` for one invocation.
 `--json` puts the

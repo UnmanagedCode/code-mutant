@@ -6,8 +6,8 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import path from 'node:path';
 
 import { NoHarnessError, loadConfig } from '../lib/config.mjs';
-import { WorkspaceError, findRepoRoot, openWorkspace } from '../lib/workspace.mjs';
-import { guardFiles, makeRepo, write } from './helpers/tmp-repo.mjs';
+import { WorkspaceError, findRepoRoot, gitStatusPorcelain, openWorkspace } from '../lib/workspace.mjs';
+import { git, guardFiles, makeRepo, write } from './helpers/tmp-repo.mjs';
 
 describe('copy isolation', () => {
   test('the copy carries uncommitted changes and excludes .git and .mutation', () => {
@@ -77,6 +77,27 @@ describe('in-place isolation', () => {
       const after = workspace.assertNoTrace();
       assert.equal(after.ok, false, 'a new untracked file must fail the no-trace assertion');
       assert.match(after.after, /leftover\.txt/);
+    } finally { repo.cleanup(); }
+  });
+
+  test('git status --porcelain survives more than 1 MiB of porcelain output', () => {
+    const repo = makeRepo({ files: guardFiles(), label: 'huge-status' });
+    try {
+      // Long paths rather than many files, so the fixture is a megabyte of
+      // OUTPUT without being thousands of writes. The tracked .keep is what
+      // stops git collapsing the whole directory into one `?? dir/` line.
+      const segment = 'd'.repeat(200);
+      const dir = path.join(segment, segment, segment);
+      write(repo.root, path.join(dir, '.keep'), '');
+      git(repo.root, ['add', '-A']);
+      git(repo.root, ['commit', '-qm', 'a deep directory']);
+      for (let i = 0; i < 1500; i += 1) {
+        write(repo.root, path.join(dir, `${String(i).padStart(6, '0')}${'f'.repeat(230)}`), 'x');
+      }
+
+      const status = gitStatusPorcelain(repo.root);
+      assert.ok(status.length > 1024 * 1024, `porcelain output was only ${status.length} bytes`);
+      assert.match(status, /000999f{10}/, 'the listing really names the untracked files');
     } finally { repo.cleanup(); }
   });
 
