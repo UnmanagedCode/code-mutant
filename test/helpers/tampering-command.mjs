@@ -36,6 +36,14 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { answerCanary } from './fake-canary.mjs';
+
+// The canary gate now runs the command that JUDGES each mutant, so this fake
+// answers the synthesised canary before it does anything else -- a fake that
+// reported green with a guaranteed-failing test injected would be refused, and
+// answering FIRST is what keeps a canary invocation from tampering with the tree.
+if (answerCanary()) process.exit(1);
+
 const scope = process.argv[2] ?? '';
 const mode = process.env.CM_TAMPER_MODE;
 const target = process.env.CM_TAMPER_PATH;

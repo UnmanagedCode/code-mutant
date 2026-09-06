@@ -47,16 +47,21 @@ Build a project-local mutation-testing harness at `harness/mutation/`, driven by
    whatever its real integration branch is). Left unset, `run`'s empty-diff-vs-base gate reports
    `not-established` and checks nothing, so a review of a branch with no committed work would read
    as a clean sweep, and `candidates` has no base to fall back on.
-5. **Scope `baselineCommand` across the project's test files, not one subdirectory.** The canary
-   gate injects a guaranteed-failing test into a candidate file, in this order: the target a previous
-   run journalled, then the scopes this run's own mutants narrow to, then tracked files matching the
+5. **Scope `baselineCommand` across the project's test files, not one subdirectory.** Under `run`,
+   the canary gate is established against each command that *judges* a mutant — the narrowed
+   `testCommand`, which names its own scope files — so `baselineCommand`'s scope does not come into
+   it for a catalog whose mutants all narrow. It does for everything else: `baseline`, an empty
+   catalog, and any mutant the gate cannot narrow (`narrowTo: "names"`, a per-mutant
+   `narrowCommand`, `exit-code` grade, a `testCommand` with no `{tests}`). There the gate injects a
+   guaranteed-failing test into a candidate file, in this order: the target a previous run
+   journalled, then the scopes this run's own mutants narrow to, then tracked files matching the
    adapter's `testFilePatterns` in sorted order. If the first few candidates sit outside
    `baselineCommand`'s scope it burns a baseline run per attempt and then fails the gate, so a repo
    whose alphabetically-first test files live outside the suite you'd normally run is the case to
    watch. A bare `baseline` has no mutants to borrow scopes from, so on a repo with no journal yet it
    has only the patterns to go on — which is why a `baseline` can fail the canary gate on a harness
-   whose `run` establishes it, and why the same `baseline` passes afterwards (the journalled target
-   carries over).
+   whose `run` establishes it, and why the same `baseline` passes afterwards once a run has
+   journalled a baseline-scope target.
 6. Write `harness/mutation/README.md` documenting how to invoke the harness for *this* project.
    Command syntax and flags are `mutate.mjs`'s own CLI, so read it directly (`--help` or its
    source) rather than copying examples from another project's harness, which can drift. Call

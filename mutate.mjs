@@ -51,17 +51,21 @@ USAGE
 COMMANDS
   baseline     Run the trust gates and stop: clean-tree, baseline, canary.
                Measures the unmutated baselineCommand in the configured
-               isolation mode (pass/fail/skip counts) and synthesises a canary.
-               Nothing else is trustworthy until this is green and the canary
-               comes back KILLED.
+               isolation mode (pass/fail/skip counts) and synthesises a canary
+               against it -- with no mutants there is no narrowed command to
+               judge anything, so this canary is always baseline-scope (and, at
+               that scope alone, cacheable). Nothing else is trustworthy until
+               this is green and the canary comes back KILLED.
   run          Run catalog mutants from .mutation/mutants.json. Per mutant:
                resolve site(s) -> refuse an ambiguous or no-op edit -> measure the
                narrow scope unmutated -> apply -> run -> classify -> restore.
                All three gates run first; there is deliberately no way to skip
-               them short of --allow-dirty. The baseline and canary may be SERVED
-               from the gate cache rather than measured again -- a measurement
-               keyed on this exact tree, labelled fromCache and never promoted;
-               --remeasure-gates forces both. See TRUST GATES.
+               them short of --allow-dirty. The baseline may be SERVED from the
+               gate cache rather than measured again -- a measurement keyed on
+               this exact tree, labelled fromCache and never promoted; the
+               canary is served only when it ran at baseline scope, and a
+               narrowed one is measured every invocation. --remeasure-gates
+               forces both. See TRUST GATES.
   validate     Resolve every catalog site against the working tree and report
                what would refuse -- RUNNING NO TESTS, so it returns in about a
                second. A pre-flight, NOT a gate: it establishes nothing and
@@ -111,9 +115,10 @@ FLAGS
                      produced, and it is labelled fromJournal so it never reads
                      as one this run made. Incompatible with --allow-dirty.
   --remeasure-gates  baseline/run/probe: skip the gate CACHE lookup, measure the
-                     baseline and canary in full, and overwrite the cached entry
-                     for this key. The correction path when a key matches but
-                     something outside the key changed -- a fresh npm install, an
+                     baseline (and any cacheable canary) in full, and overwrite
+                     the cached entry for this key. The correction path when a
+                     key matches but something outside the key changed -- a
+                     fresh npm install, an
                      edited .env, any gitignored state the suite reads.
   --file <path>      probe: file to mutate.
   --anchor <text>    probe: exact substring to replace; must match exactly once.
@@ -221,12 +226,25 @@ TRUST GATES
                      refusal) when no baseBranch is configured, or it names the
                      branch HEAD is already on.
   baseline           See the baseline command above.
-  canary             Synthesised per run, never committed; see mutants.schema.md.
-  Both of those two are MEASURED once per tree and cached under .mutation/gates/,
-  keyed on the worktree's bytes, the resolved commands, the adapter, the isolation
-  mode, this harness's own source and the runtime. A served gate carries
-  fromCache: true everywhere it appears and its outcome verbatim -- nothing is
-  promoted to passed. Any of those inputs differing is a miss. Gitignored state
+  canary             Synthesised per run, never committed. Run against each
+                     command that JUDGES a mutant (its narrowed scope), once per
+                     distinct scope, and against baselineCommand for anything
+                     that cannot be soundly narrowed -- names narrowing, a
+                     per-mutant narrowCommand, exit-code grade, an adapter whose
+                     refs do not name files, a testCommand with no {tests}, and
+                     'baseline'/an empty catalog/a fully resumed run. A scope
+                     that cannot be shown to observe a failure ERRORs its OWN
+                     mutants (canary-not-established) and the gate reads PARTIAL;
+                     a run that attested nothing at all still fails wholesale.
+                     Full contract: mutants.schema.md.
+  The baseline, and a BASELINE-SCOPE canary, are MEASURED once per tree and
+  cached under .mutation/gates/, keyed on the worktree's bytes, the resolved
+  commands, the adapter, the isolation mode, this harness's own source and the
+  runtime. A served gate carries fromCache: true everywhere it appears and its
+  outcome verbatim -- nothing is promoted to passed. Any of those inputs
+  differing is a miss. A NARROW-SCOPE canary is never cached, by design: it
+  attests about commands derived from the mutant catalog, which the key
+  deliberately does not cover. Gitignored state
   the suite reads (node_modules, a .env, a local DB) is NOT in the key:
   --remeasure-gates is the correction path. Full contract: mutants.schema.md.
 

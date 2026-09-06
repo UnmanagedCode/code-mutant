@@ -153,7 +153,9 @@ per-mutant `narrowCommand` can override it. Every verdict is labeled with which 
 since an exit-code kill is not the same precision as a counted kill. `--learn` reads
 `expectFail`/`expectPass` as scope hints only, never grades against them, and falls back to
 `baselineCommand` (the whole suite) when a mutant names no ref at all — discovery has no scope to
-narrow to.
+narrow to. **The canary gate follows the narrowing**: the command that judges a mutant is the command
+the canary is established against (see the canary bullet under [Three trust
+gates](#three-trust-gates)).
 
 ### Verdicts
 
@@ -176,9 +178,10 @@ in either direction. See `lib/occupancy.mjs`.
 ### Three trust gates
 
 Before any verdict above is believable, three gates run first — and there is deliberately no way to
-skip them short of `--allow-dirty`. The baseline and canary may be *served* rather than re-measured
-when this exact tree has already been measured ([Gate caching](#gate-caching)); a served gate is
-labelled and its outcome is verbatim, so it is never a skipped one.
+skip them short of `--allow-dirty`. The baseline — and a baseline-scope canary — may be *served*
+rather than re-measured when this exact tree has already been measured ([Gate
+caching](#gate-caching)); a served gate is labelled and its outcome is verbatim, so it is never a
+skipped one.
 
 - **clean-tree** — mutation must run against committed state, so a survivor is re-runnable against a
   sha by anyone and a restore bug degrades from destroying unrecoverable work to a recoverable git
@@ -192,6 +195,14 @@ labelled and its outcome is verbatim, so it is never a skipped one.
   back `KILLED`, then discards. It is never written to the repo. Without it, a test command that
   silently runs zero tests would report every mutant `SURVIVED` (every finding false), and one that
   always errors would report every mutant `KILLED` (a fake-clean sweep).
+  **Which command it runs:** the one that actually judges the mutant — each distinct narrowed scope,
+  once — because in counted mode no verdict comes from `baselineCommand`. It falls back to
+  `baselineCommand` for anything it cannot soundly narrow: `narrowTo: "names"` (the name filter
+  excludes the injected canary by construction), a per-mutant `narrowCommand`, exit-code grade, an
+  adapter whose refs do not name files, a `testCommand` with no `{tests}`, and `baseline`/an empty
+  catalog/a fully resumed run. A scope that *cannot* be shown to observe a failure `ERROR`s **its own
+  mutants** (`canary-not-established`, a `PARTIAL` gate) rather than failing the whole run — but a run
+  where nothing at all could be attested is still the wholesale refusal it always was.
 
 Each gate reports `passed`, `failed`, or **`not-established`** — a gate that could not run at all,
 which must never be read as a pass. It does not fail the exit code, so exit 0 on its own does not
@@ -207,10 +218,12 @@ records' full shapes are in [`mutants.schema.md`](mutants.schema.md#the-clean-tr
 
 ### Gate caching
 
-The baseline and canary are a fixed cost paid once per invocation, independent of mutant count — two
-full `baselineCommand` runs, measured at ~98.6% of a single-mutant invocation on this workspace's
-own suite. Both records are cached at **`.mutation/gates/<key>.json`** and served on a repeat run
-against an unchanged tree.
+The gates are a fixed cost paid once per invocation, independent of mutant count. Measured at
+~135,000 ms — **98.6% of a single-mutant invocation** on this workspace's own suite — *before the
+canary was narrowed*, when the floor was two full `baselineCommand` runs. It is now one full run plus
+one narrow run per resolved scope. The baseline record is cached at **`.mutation/gates/<key>.json`**
+and served on a repeat run against an unchanged tree; the canary record is cached **only when it ran
+at baseline scope**.
 
 The key covers a **tree digest** (`HEAD^{tree}` plus a byte hash of every path `git status` reports,
 so a hit means *byte-identical worktree*, not *same commit*), the resolved commands, the adapter,
@@ -225,11 +238,17 @@ Phase A, before any concurrency exists), the gitignored `.mutation/` catalog —
 exposure: `--remeasure-gates` skips the lookup, measures both gates in full and overwrites the entry,
 and is the correction path when a key matches but something outside it moved.
 
+**A narrow-scope canary is never served from cache, by design** — it attests about commands derived
+from the catalog, which the key deliberately does not cover, so a narrowing run measures it every
+time (~1 narrow run per scope) and the entry records `canary: null`. That is also what keeps the
+key's reason for excluding the catalog true: the cached canary really is a property of the command
+and not of the mutants.
+
 A served gate is never dressed up as a measured one: its outcome is verbatim (`not-established` stays
 `not-established`), `fromCache: true` sits beside it in `--json` and on the printed gate line, and the
-report carries a `GATES FROM CACHE` banner. An entry is written only by a run that proved it left no
-trace, so a run killed mid-mutation re-pays the gates rather than caching a tree it may have
-poisoned. Full contract — key inputs, write conditions, the crash-window ordering — is in
+report carries a `GATES FROM CACHE` banner — or `BASELINE FROM CACHE`, when the canary was measured
+here. An entry is written only by a run that proved it left no trace, so a run killed mid-mutation
+re-pays the gates rather than caching a tree it may have poisoned. Full contract — key inputs, write conditions, the crash-window ordering — is in
 [`mutants.schema.md`](mutants.schema.md#caching-the-gates).
 
 ## The mutant catalog

@@ -26,10 +26,10 @@ import {
   costConfig, costFiles, costMutants, sharedScopeMutants,
 } from './helpers/cost-project.mjs';
 
-async function run(repo, mutants) {
+async function run(repo, mutants, { remeasureGates = false } = {}) {
   const config = loadConfig({ repoRoot: repo.root });
   const adapter = await loadAdapter(config.runner, { configDir: config.configDir });
-  const report = await execute({ config, adapter, mutants });
+  const report = await execute({ config, adapter, mutants, remeasureGates });
   return { report, config };
 }
 
@@ -83,20 +83,23 @@ describe('cost model', () => {
     } finally { repo.cleanup(); }
   });
 
-  test('T3: every canary attempt carries its own cost', async () => {
+  test('T3: every canary attempt carries its own cost, and a narrow scope pays no walk', async () => {
     // baselineCommand scoped to the LAST module, so the earlier candidates the
-    // gate tries sit outside the command's scope and their attempts are recorded
-    // rather than fired. This is the shape that makes the attempt count -- and
-    // therefore the attempt cost -- non-zero.
+    // BASELINE-SCOPE gate tries sit outside the command's scope and their attempts
+    // are recorded rather than fired. This is the shape that makes the attempt
+    // count -- and therefore the attempt cost -- non-zero.
     const repo = makeRepo({
       files: costFiles({ modules: 4, workIterations: 0 }),
       config: costConfig({ baselineCommand: 'node --test --test-concurrency=1 test/m03.test.mjs' }),
       label: 'cost-canary',
     });
     try {
-      const { report } = await run(repo, costMutants(1));
+      // No mutants: nothing narrows, so this is the baseline-scope candidate walk
+      // the attempt cost exists to measure.
+      const { report } = await run(repo, []);
 
       const canary = report.gates.canary;
+      assert.equal(canary.scope, 'baseline');
       assert.ok(canary.attempts.length >= 1, `expected recorded attempts, got ${JSON.stringify(canary)}`);
       for (const attempt of canary.attempts) {
         assert.equal(typeof attempt.durationMs, 'number', JSON.stringify(attempt));
@@ -106,6 +109,23 @@ describe('cost model', () => {
       assert.equal(canary.status, 'KILLED', canary.detail);
       assert.equal(canary.target, 'test/m03.test.mjs');
       assert.equal(typeof canary.durationMs, 'number');
+
+      // THE OTHER HALF, and the whole point of narrowing the gate: a mutant's own
+      // judging command names its scope files, so the same fixture pays NO walk --
+      // the cost above is what a narrowed canary does not spend. Per-scope, the
+      // record carries its own target and cost where the baseline half carries none.
+      // --remeasure-gates because the run above cached a BASELINE-SCOPE canary
+      // against this byte-identical tree, and this half is a claim about a
+      // measurement made here.
+      const { report: narrowed } = await run(repo, costMutants(1), { remeasureGates: true });
+      const narrowCanary = narrowed.gates.canary;
+      assert.equal(narrowCanary.scope, 'narrow');
+      assert.equal(narrowCanary.status, 'KILLED', narrowCanary.detail);
+      assert.deepEqual(narrowCanary.attempts, [], 'the baseline half never ran, so it recorded nothing');
+      assert.equal(narrowCanary.scopes.length, 1);
+      assert.deepEqual(narrowCanary.scopes[0].attempts, [], 'the command names its scope: no candidates missed');
+      assert.equal(narrowCanary.scopes[0].target, 'test/m00.test.mjs');
+      assert.equal(typeof narrowCanary.scopes[0].durationMs, 'number');
     } finally { repo.cleanup(); }
   });
 
@@ -121,6 +141,14 @@ describe('cost model', () => {
       const sum = (list, pick) => list.reduce((acc, item) => acc + pick(item), 0);
 
       assert.equal(timings.gatesMs, report.gates.baseline.durationMs + report.gates.canary.durationMs);
+      // The same discipline one level down: a narrow-scope canary's own total is
+      // the sum of the per-scope canaries it ran, so the aggregate on the gate
+      // record cannot drift from the parts it is derived from.
+      assert.equal(report.gates.canary.scope, 'narrow', JSON.stringify(report.gates.canary));
+      assert.equal(
+        report.gates.canary.durationMs,
+        sum(report.gates.canary.scopes, (s) => s.durationMs),
+      );
       assert.equal(timings.narrowBaselinesMs, sum(report.narrowBaselines, (b) => b.durationMs));
       assert.equal(timings.mutantsMs, sum(report.results, (r) => r.durationMs));
       // Every component is inside the run, so the total bounds all of them.
