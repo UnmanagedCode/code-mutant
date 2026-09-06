@@ -5,9 +5,14 @@
 // Measured (card 2026-0036 Part 1, S3): twelve learn mutants cost 25s of measured
 // commands against 4s of gates, so an interrupt after ten threw away ~80% of a run.
 //
-// What resume must NOT do is as load-bearing as what it does: it never skips a
+// What resume must NOT do is as load-bearing as what it does: it never reuses a
 // gate, never assumes tree state, and never reuses a verdict earned against
 // different code or a different config. Each of those is a test below.
+//
+// Resume never reusing a gate is not the same as a gate never being reused: the
+// gate CACHE (test/gate-cache.test.mjs) serves one against a byte-identical
+// tree, on its own key and labelled `fromCache`. Two claims here have to say
+// which of the two they are pinning -- 11 and 15.
 //
 // The real CLI is driven as a child process throughout, because the exit code and
 // the advisory on stderr are part of the contract.
@@ -41,6 +46,11 @@ function writeCatalog(repo, mutants) {
 
 function journalFiles(repo) {
   const dir = path.join(repo.root, '.mutation', 'journal');
+  return existsSync(dir) ? readdirSync(dir) : [];
+}
+
+function gateCacheFiles(repo) {
+  const dir = path.join(repo.root, '.mutation', 'gates');
   return existsSync(dir) ? readdirSync(dir) : [];
 }
 
@@ -105,6 +115,14 @@ describe('resuming an interrupted run', () => {
       assert.equal(lines[0].kind, 'header');
       assert.equal(lines.filter((l) => l.kind === 'result').length, 2, 'exactly the completed mutants');
 
+      // WHY THE GATES BELOW REALLY ARE MEASURED, now that a cached one exists.
+      // Not because gates are uncacheable -- they are -- but because the entry
+      // is written only after the run has proved it left no trace, and this run
+      // was killed mid-mutation and never got there. Asserted rather than
+      // assumed: moving the write any earlier would leave the claim below
+      // passing while its reason had gone false.
+      assert.deepEqual(gateCacheFiles(repo), [], 'a run killed mid-mutation must write no gate cache entry');
+
       const before = Number(readFileSync(stateFile, 'utf8').trim());
 
       // Re-run with --resume and no blocking.
@@ -137,9 +155,12 @@ describe('resuming an interrupted run', () => {
         `the fake command ran ${after - before} times, expected 2 (one narrow baseline + one mutant `
         + 'run) -- a resumed mutant must cost neither',
       );
-      // The gates did run, and in full: resume never skips one.
+      // The gates did run, and in full -- resume reuses no gate, and the cache
+      // had nothing to serve (asserted above).
       assert.equal(report.gates.baseline.outcome, 'passed');
+      assert.equal(report.gates.baseline.fromCache, false);
       assert.equal(report.gates.canary.status, 'KILLED');
+      assert.equal(report.gates.canary.fromCache, false);
       // And the same fact from the other side: one scope measured, not three.
       assert.equal(report.narrowBaselines.length, 1);
     } finally { repo.cleanup(); rmSync(scratch, { recursive: true, force: true }); }
@@ -239,8 +260,15 @@ describe('resuming an interrupted run', () => {
       assert.equal(first.report.gates.canary.target, 'test/m03.test.mjs');
 
       // Run 2 prepends the journalled target to the CANDIDATE list. The canary
-      // still runs in full and must still fire -- no gate verdict is ever cached.
-      const second = await runJson(repo, ['run', '--all', '--json']);
+      // still runs in full and must still fire: what is reused is a HINT about
+      // which file to try first, not the gate's outcome.
+      //
+      // --remeasure-gates is what keeps that observable. The tree is unchanged
+      // between the two runs, so without it the gate cache serves run 1's
+      // record verbatim -- attempts included -- and this claim would pass on a
+      // replayed number while proving nothing about candidate ordering.
+      const second = await runJson(repo, ['run', '--all', '--remeasure-gates', '--json']);
+      assert.equal(second.report.gates.canary.fromCache, false, 'the canary must have been measured here');
       assert.equal(second.report.gates.canary.attempts.length, 0, JSON.stringify(second.report.gates.canary));
       assert.equal(second.report.gates.canary.target, 'test/m03.test.mjs');
       assert.equal(second.report.gates.canary.status, 'KILLED');

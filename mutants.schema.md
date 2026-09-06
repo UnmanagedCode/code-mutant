@@ -279,17 +279,26 @@ finding can be pointed at exactly the commit it was found against.
                                                          // base-unresolvable record carries NEITHER KEY, and
                                                          // distance is null when the diff is empty or unreadable
     baseline: { outcome: "passed"|"failed", command, counts: {passed,failed,skipped,ran}|null, exitCode,
-                failedTests: [string]|null, durationMs, timedOut, detail },   // failedTests: null when nothing is nameable
-                                                         // (exit-code grade, or a FAILED baseline with no parsed
-                                                         // failure to name); [] only when green
+                failedTests: [string]|null, durationMs, timedOut, detail,   // failedTests: null when nothing is nameable
+                fromCache, measuredDurationMs },           // (exit-code grade, or a FAILED baseline with no parsed
+                                                           // failure to name); [] only when green
     canary:   { outcome, status: "KILLED"|"FAILED"|"NOT-ESTABLISHED", grade, target, durationMs,
                 attempts: [ { target, durationMs, why } ],   // every candidate tried and why it did not fire
-                detail }
-  },
+                detail, fromCache, measuredDurationMs }
+  },                                                       // fromCache: true iff served from the gate cache rather
+                                                           // than measured here. On a served record durationMs is 0
+                                                           // and measuredDurationMs carries the original cost; on a
+                                                           // measured one measuredDurationMs is null. Never absent.
   narrowBaselines: [ { command, green, counts, durationMs } ],   // one entry per DISTINCT narrow scope
   timings: { totalMs, gatesMs, narrowBaselinesMs, mutantsMs },
   resumed:   { journal, key, reused, ran } | null,   // non-null iff --resume was passed
   resumable: { key, available } | null,             // ADVISORY: a journal matches and --resume was NOT passed
+  gateCache: { status: "hit"|"miss"|"bypassed", key, file,
+               measuredAt: string|null, measuredSha: string|null,   // provenance; non-null only on a hit
+               lookupMs,                                            // the cache's OWN cost, not a measured command
+               wrote: boolean, writeSkipped: string|null            // why no entry was written, when none was
+             } | null,                              // null until the key is computed -- a run that stopped at
+                                                    // clean-tree, base-diff or the canary prerequisite has none
   results: [ {
     id, invariant, whyNotEquivalent, waived,
     verdict: "KILLED"|"SURVIVED"|"IMPRECISE"|"TIMEOUT"|"ERROR"|"LEARNED",
@@ -335,7 +344,7 @@ sums.
 | Field | Covers |
 |---|---|
 | `timings.totalMs` | The whole invocation, including a run that stopped at a failed gate. |
-| `timings.gatesMs` | `gates.baseline.durationMs + gates.canary.durationMs`. The **fixed** cost — paid once per invocation regardless of mutant count. |
+| `timings.gatesMs` | `gates.baseline.durationMs + gates.canary.durationMs`. The **fixed** cost when the gates are measured — paid once per invocation regardless of mutant count. **0 when both were served from cache**, because no command ran; the original cost is at `gates.*.measuredDurationMs`. The cache's own lookup cost is `gateCache.lookupMs`, deliberately outside this sum. |
 | `timings.narrowBaselinesMs` | Sum of `narrowBaselines[].durationMs` — one measured command per *distinct* scope, so N mutants at one scope cost one entry. |
 | `timings.mutantsMs` | Sum of `results[].durationMs`. A **sum of per-mutant wall clocks**, so under `jobs > 1` it legitimately exceeds `totalMs`. |
 | `results[].applyMs` / `measureMs` / `restoreMs` | The harness's own snapshot+apply and restore cost, versus the project's command. Disjoint slices of that result's `durationMs`; `null` for a phase that never ran (an `ERROR` that stopped before Phase B). The remainder, when there is one, is the per-mutant exit-code canary — its own cost is on `results[].canary.durationMs`. |
@@ -434,21 +443,104 @@ and decisions, re-read from the current catalog on reuse. So recording a waiver 
 
 **The two things resume never does:**
 
-- **It never skips a gate.** clean-tree, empty-diff-vs-base, baseline and canary all run in full on
-  every invocation — a cached gate result would be a gate that did not run this invocation reading as
-  one that passed, the exact ambiguity `not-established` exists to prevent. Stated plainly: a resumed
-  run still pays the fixed cost. Resume saves per-mutant measurement only. (The journalled canary
-  *target* is reused as a candidate **hint**, reordering which files the gate tries first; the gate
-  still runs and must still fire.)
+- **It never reuses a gate.** Resume reuses a *verdict* — a graded claim about a mutant — and a
+  verdict's trustworthiness rests on gates that held for *this* tree, so its gates are established
+  every invocation regardless of what is journalled. (The journalled canary *target* is reused as a
+  candidate **hint**, reordering which files the gate tries first; the gate still runs and must still
+  fire.) A gate may still be **served from the gate cache**, which is a separate decision on a
+  separate key — see [Caching the gates](#caching-the-gates). The reason behind the older, stronger
+  claim is unchanged and still governs: a gate that did not run this invocation must never read as
+  one that passed, the exact ambiguity `not-established` exists to prevent. A cache hit is not that —
+  it is a measurement keyed on the tree it was made against, served verbatim and labelled
+  `fromCache`, so `not-established` stays `not-established` and nothing is promoted to `passed`.
 - **It never assumes tree state.** The journal records verdicts, never "what I left in the tree". A
   SIGKILL can leave a mutation behind, and on the next invocation the clean-tree gate sees it as an
-  uncommitted change and refuses (exit 2) rather than resuming onto a poisoned tree.
+  uncommitted change and refuses (exit 2) rather than resuming onto a poisoned tree. The gate cache
+  makes the same refusal for itself without depending on that gate: its key is over worktree **bytes**,
+  so a tree carrying residue hashes differently from the tree an entry was measured against.
 
 Reuse is **opt-in** because a reused verdict was produced by a process nobody watched. Every one is
 labelled `fromJournal: true`, counted in `resumed.reused`, and named in the printed report, so it
 never reads as a verdict this run made. When a journal matches and `--resume` was *not* passed, the
 report carries `resumable` and the CLI prints an advisory naming the flag — **advisory only**: never
 a refusal, never a gate, no effect on the exit code.
+
+## Caching the gates
+
+The baseline and canary gates are a **fixed cost paid once per invocation**, independent of mutant
+count: two full `baselineCommand` runs. Measured on code-conductor (`npm test` ≈ 67 s, 35-mutant
+catalog): ~135,000 ms, **98.6% of a single-mutant invocation**. Nothing about that work depends on
+which mutants are in the run, so both records are persisted and reused against a tree that has not
+changed.
+
+A hit is **not** "a gate that did not run". It is a measurement keyed on the tree it was made
+against; its outcome is served **verbatim** (`not-established` stays `not-established`, nothing is
+promoted to `passed`) and labelled `fromCache: true` on the record, in `--json`, on the printed gate
+line, and in a top-of-report `GATES FROM CACHE` banner.
+
+**Location:** `.mutation/gates/<key>.json`, beside `.mutation/journal/` and `.mutation/results/` and
+with the same lifetime — one review loop, gitignored, dies with the worktree. Written atomically
+(temp file + rename in the same directory), so a SIGKILL mid-write leaves no half-entry. One entry
+per distinct tree+config; no pruning.
+
+**`<key>` is `sha256` over six inputs, truncated to 32 hex** (the same shape as the journal key):
+
+| Input | Derivation | Why it is in the key |
+|---|---|---|
+| `treeDigest` | `git rev-parse HEAD^{tree}`, plus a canonical `(path, state)` list for every path `git status --porcelain -z -uall` reports; `state` is `sha256(bytes)`, `absent`, or `link:<target>` | The gates measure the project's code. Committed content rides the tree sha; anything modified, staged, deleted or untracked-not-ignored is content-hashed. This is what makes a hit mean *byte-identical tree*, not *same commit*. |
+| `configFingerprint` | The same fingerprint `journalKey` uses (`lib/fingerprint.mjs`) — over `baselineCommand`, `testCommand`, `runner`, `timeoutMs`, `hang`, `setup`, `teardown`, `preserve` | The resolved commands are what was measured. `timeoutMs` bounds the baseline, `hang` derives the canary's deadline, `setup`/`teardown` wrap every measured command, `preserve` changes what a copy contains. `testCommand` is not run by either gate and is in the key anyway: the fingerprint is the harness's identity, not a subset a later edit can drift from. |
+| `adapter` | `{name, grade, modulePath}` | The adapter decides whether the baseline is green and which canary path runs. A `custom` adapter's `parse.mjs` is tracked beside `config.json`, so `treeDigest` covers its contents too. |
+| `isolation` | `"in-place"` \| `"copy"`, after any `--copy`/`--in-place` override | A copy is not a git repository, so a suite that shells out to git is green in-place and red in a copy. Two different measurements. |
+| `harnessFingerprint` | `sha256` over the sorted `(relPath, sha256(bytes))` of `mutate.mjs` and every `lib/**/*.mjs` | The harness version, self-maintaining. `package.json` carries no `version` and this is a private plugin merged with no release step, so a version string only invalidates when someone remembers to bump it. A source digest cannot drift from the code it identifies. |
+| `runtime` | `{version, platform, arch}` from `process` | A node upgrade changes what a suite does without changing a byte of the tree, and a bind-mounted worktree can be entered from two platforms. |
+
+**Deliberately not in the key:**
+
+- **`jobs`** — the deliberate contrast with `journalKey`, which *does* include it. The gates run
+  serially in the primary workspace during Phase A, before any concurrency exists, so a gate measured
+  serially is the same measurement at any `jobs`. Reusing a `jobs=4` *verdict* under `jobs=1` would
+  hide the concurrent-suite hazard; reusing a gate *measurement* cannot.
+- **`learn`** — it suppresses grading and changes neither gate command.
+- **`mutatedSha`** — implied by `treeDigest` and weaker than it; an amend or rebase that changes no
+  bytes changes no gate. It is recorded on the entry as `measuredSha` and surfaced on a hit, so a
+  reader can see a measurement that came from a different commit with identical content.
+- **`.mutation/` itself, the catalog included** — gitignored, so `git status` never reports it. Required
+  for correctness (the cache writing its own entry must not invalidate its own key), and right on the
+  merits: the baseline-scope canary proves that *`baselineCommand` observes a deliberate break in a
+  file it exercises*, a property of the command and not of the mutants. **Consequence:** rewriting an
+  `IMPRECISE` mutant and re-running costs no gates.
+- **Gitignored state the suite reads** — `node_modules/`, a `.env`, a local database, a build cache;
+  environment variables likewise. Not git-visible and not cheaply hashable. **This is the one real
+  exposure**, and `--remeasure-gates` is the correction path. It is bounded in practice by the entry
+  living in `.mutation/`, which dies with the worktree. A wall-clock TTL was rejected: an
+  `npm install` takes seconds, so any TTL long enough to be useful is far too long to prevent one.
+
+**An entry is written only when all four hold**, and only from a run that reached the end:
+
+1. `noTrace.ok === true` — the run proved it left nothing behind;
+2. `reproducible === true` — mirrors the journal's rule; a `--allow-dirty` run records nothing reusable;
+3. neither gate `FAILED` (implied — every gate failure returns before `noTrace` is computed);
+4. `.mutation/` is gitignored. When it is not, the write is **skipped** and the reason recorded at
+   `gateCache.writeSkipped` — `baseline` deliberately has no hard stop on an unignored `.mutation/`
+   and does not acquire one here.
+
+**The key is computed once, in Phase A, and the write uses that key** — never one recomputed at the
+end. A key derived after Phase B would hash a tree that was mutated and restored, so a restore that
+silently failed would file a clean-tree measurement under a residue-tree key. That is the one way
+this feature could manufacture a false hit, and the ordering removes it by construction. Two further
+consequences of writing only at the end: a run killed mid-mutation writes **nothing** (it re-pays the
+gates next time — the correct trade), and a tree carrying crash residue can never be served a clean
+gate, because the digest is over worktree bytes.
+
+A malformed entry — bad JSON, wrong `schemaVersion`, a `key` that disagrees with its filename, either
+gate record missing — is a **logged miss** on stderr, not a throw: the gates are re-measured and the
+entry overwritten. `keyInputs` is recorded inside the entry so an operator can diff two entries and
+see why one missed; it is never read back as an authority, because the filename is the key.
+
+**`--remeasure-gates`** (`baseline`, `run`, `probe`; a usage error elsewhere) skips the lookup,
+measures both gates, and **writes the fresh result over the entry for this key**. The write half is
+what makes it the in-band correction path for an entry that key-matches but was measured under
+changed un-keyed state.
 
 ## Exit codes
 
