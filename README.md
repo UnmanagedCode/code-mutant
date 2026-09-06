@@ -176,7 +176,9 @@ in either direction. See `lib/occupancy.mjs`.
 ### Three trust gates
 
 Before any verdict above is believable, three gates run first — and there is deliberately no way to
-skip them short of `--allow-dirty`:
+skip them short of `--allow-dirty`. The baseline and canary may be *served* rather than re-measured
+when this exact tree has already been measured ([Gate caching](#gate-caching)); a served gate is
+labelled and its outcome is verbatim, so it is never a skipped one.
 
 - **clean-tree** — mutation must run against committed state, so a survivor is re-runnable against a
   sha by anyone and a restore bug degrades from destroying unrecoverable work to a recoverable git
@@ -213,7 +215,10 @@ against an unchanged tree.
 The key covers a **tree digest** (`HEAD^{tree}` plus a byte hash of every path `git status` reports,
 so a hit means *byte-identical worktree*, not *same commit*), the resolved commands, the adapter,
 the isolation mode, a digest of this harness's own source, and the node version/platform/arch. Any
-of those differing is a miss. Deliberately **not** in the key: `jobs` (the gates run serially in
+of those differing is a miss. A tree no key can describe — an unborn HEAD, or a path git names whose
+bytes it cannot read, such as an untracked embedded repository or a submodule with dirty contents —
+is a **forced miss that writes nothing**, since an entry filed under a key that cannot tell its own
+tree apart is exactly the false hit the cache must not produce. Deliberately **not** in the key: `jobs` (the gates run serially in
 Phase A, before any concurrency exists), the gitignored `.mutation/` catalog — so reworking an
 `IMPRECISE` mutant and re-running costs no gates — and **gitignored state the suite reads**
 (`node_modules/`, a `.env`, a local DB, environment variables). That last one is the one real

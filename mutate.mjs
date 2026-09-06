@@ -58,7 +58,10 @@ COMMANDS
                resolve site(s) -> refuse an ambiguous or no-op edit -> measure the
                narrow scope unmutated -> apply -> run -> classify -> restore.
                All three gates run first; there is deliberately no way to skip
-               them short of --allow-dirty.
+               them short of --allow-dirty. The baseline and canary may be SERVED
+               from the gate cache rather than measured again -- a measurement
+               keyed on this exact tree, labelled fromCache and never promoted;
+               --remeasure-gates forces both. See TRUST GATES.
   validate     Resolve every catalog site against the working tree and report
                what would refuse -- RUNNING NO TESTS, so it returns in about a
                second. A pre-flight, NOT a gate: it establishes nothing and

@@ -293,7 +293,8 @@ finding can be pointed at exactly the commit it was found against.
   timings: { totalMs, gatesMs, narrowBaselinesMs, mutantsMs },
   resumed:   { journal, key, reused, ran } | null,   // non-null iff --resume was passed
   resumable: { key, available } | null,             // ADVISORY: a journal matches and --resume was NOT passed
-  gateCache: { status: "hit"|"miss"|"bypassed", key, file,
+  gateCache: { status: "hit"|"miss"|"bypassed",
+               key: string|null, file: string|null,   // both null on a FORCED MISS -- a tree no key can describe
                measuredAt: string|null, measuredSha: string|null,   // provenance; non-null only on a hit
                lookupMs,                                            // the cache's OWN cost, not a measured command
                wrote: boolean, writeSkipped: string|null            // why no entry was written, when none was
@@ -487,12 +488,28 @@ per distinct tree+config; no pruning.
 
 | Input | Derivation | Why it is in the key |
 |---|---|---|
-| `treeDigest` | `git rev-parse HEAD^{tree}`, plus a canonical `(path, state)` list for every path `git status --porcelain -z -uall` reports; `state` is `sha256(bytes)`, `absent`, or `link:<target>` | The gates measure the project's code. Committed content rides the tree sha; anything modified, staged, deleted or untracked-not-ignored is content-hashed. This is what makes a hit mean *byte-identical tree*, not *same commit*. |
+| `treeDigest` | `git rev-parse HEAD^{tree}`, plus a canonical `(path, state)` list for every path `git status --porcelain -z -uall` reports; `state` is `<mode>:sha256(bytes)`, `absent`, or `link:<target>` | The gates measure the project's code. Committed content rides the tree sha; anything modified, staged, deleted or untracked-not-ignored is content-hashed. This is what makes a hit mean *byte-identical tree*, not *same commit*. The mode is in the state because `chmod +x` with identical bytes is reported by porcelain and changes what an exec-bit-dependent suite does. |
 | `configFingerprint` | The same fingerprint `journalKey` uses (`lib/fingerprint.mjs`) — over `baselineCommand`, `testCommand`, `runner`, `timeoutMs`, `hang`, `setup`, `teardown`, `preserve` | The resolved commands are what was measured. `timeoutMs` bounds the baseline, `hang` derives the canary's deadline, `setup`/`teardown` wrap every measured command, `preserve` changes what a copy contains. `testCommand` is not run by either gate and is in the key anyway: the fingerprint is the harness's identity, not a subset a later edit can drift from. |
 | `adapter` | `{name, grade, modulePath}` | The adapter decides whether the baseline is green and which canary path runs. A `custom` adapter's `parse.mjs` is tracked beside `config.json`, so `treeDigest` covers its contents too. |
 | `isolation` | `"in-place"` \| `"copy"`, after any `--copy`/`--in-place` override | A copy is not a git repository, so a suite that shells out to git is green in-place and red in a copy. Two different measurements. |
 | `harnessFingerprint` | `sha256` over the sorted `(relPath, sha256(bytes))` of `mutate.mjs` and every `lib/**/*.mjs` | The harness version, self-maintaining. `package.json` carries no `version` and this is a private plugin merged with no release step, so a version string only invalidates when someone remembers to bump it. A source digest cannot drift from the code it identifies. |
 | `runtime` | `{version, platform, arch}` from `process` | A node upgrade changes what a suite does without changing a byte of the tree, and a bind-mounted worktree can be entered from two platforms. |
+
+**The forced miss.** Some trees cannot be described by any key, and the answer is always a miss that
+also **writes nothing** — `gateCache.status: "miss"` with `key` and `file` both `null` and the reason
+in `writeSkipped`. Filing an entry under a key that cannot tell its own tree apart is the false hit,
+not a cure for one. Three causes:
+
+- **An unborn HEAD.** No committed state to key on. A miss, never a refusal: the gates ran on a
+  zero-commit repo before this cache existed and still do.
+- **A path git names that cannot be reduced to bytes** — an untracked **embedded git repository**
+  (which `-uall` collapses to a single `?? vendor/inner/` entry; a plain untracked directory *is*
+  expanded to its files and stays digestable), a **submodule with dirty contents** (always the one
+  line ` M sub` however much of its worktree moved), or an unreadable path. Each varies freely under a
+  porcelain line that does not move, so any shared placeholder state would collide two different trees
+  into one key.
+- Costs nothing in practice: every one of those shapes is a tree `run` and `baseline` already refuse
+  as dirty. What stays cacheable is the clean tree, which is the case this feature exists for.
 
 **Deliberately not in the key:**
 
@@ -532,9 +549,10 @@ consequences of writing only at the end: a run killed mid-mutation writes **noth
 gates next time — the correct trade), and a tree carrying crash residue can never be served a clean
 gate, because the digest is over worktree bytes.
 
-A malformed entry — bad JSON, wrong `schemaVersion`, a `key` that disagrees with its filename, either
-gate record missing — is a **logged miss** on stderr, not a throw: the gates are re-measured and the
-entry overwritten. `keyInputs` is recorded inside the entry so an operator can diff two entries and
+A malformed **or unreadable** entry — bad JSON, an `EACCES` on the file, wrong `schemaVersion`, a
+`key` that disagrees with its filename, either gate record missing — is a **logged miss** on stderr,
+not a throw: the gates are re-measured and the entry overwritten. A crafted entry can therefore never
+deny a run. `keyInputs` is recorded inside the entry so an operator can diff two entries and
 see why one missed; it is never read back as an authority, because the filename is the key.
 
 **`--remeasure-gates`** (`baseline`, `run`, `probe`; a usage error elsewhere) skips the lookup,

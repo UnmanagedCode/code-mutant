@@ -19,8 +19,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import {
-  appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
-  writeFileSync,
+  appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
+  rmSync, writeFileSync,
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { loadAdapter } from '../lib/adapters/index.mjs';
 import { loadConfig } from '../lib/config.mjs';
 import { execute } from '../lib/runner.mjs';
-import { harnessFingerprint } from '../lib/gate-cache.mjs';
+import { gateCacheKey, harnessFingerprint, treeDigest } from '../lib/gate-cache.mjs';
 import { git, guardFiles, makeRepo, write } from './helpers/tmp-repo.mjs';
 import { childEnv, RUNNER, runCli } from './helpers/cli.mjs';
 import { costConfig, costFiles, costMutants } from './helpers/cost-project.mjs';
@@ -115,6 +115,109 @@ async function runInProcess(repo, mutants = [], overrides = {}) {
   return execute({ config: { ...config, ...overrides }, adapter, mutants });
 }
 
+// EVERY key input, varied one at a time. These sit at the unit level on purpose:
+// an input can be present in `keyInputs`, recorded in the entry, and printed in
+// the report while never reaching `canonical()` -- deleting it from the object
+// then costs nothing and no integration test notices. Only a same-everything-
+// except-one comparison catches that.
+const BASE_INPUTS = Object.freeze({
+  treeDigest: 'a'.repeat(64),
+  configFingerprint: '{"baselineCommand":"npm test"}',
+  adapter: { name: 'node-test', grade: 'counted', modulePath: null },
+  isolation: 'in-place',
+  harnessFingerprint: 'b'.repeat(64),
+  runtime: { version: 'v22.0.0', platform: 'linux', arch: 'x64' },
+});
+
+describe('gate cache key', () => {
+  test('K1: identical inputs produce an identical key', () => {
+    // The control every claim below rests on: a key that varied on its own would
+    // make all of them pass while the cache never hit.
+    assert.equal(gateCacheKey({ ...BASE_INPUTS }), gateCacheKey({ ...BASE_INPUTS }));
+    assert.equal(gateCacheKey(BASE_INPUTS).length, 32);
+  });
+
+  for (const [name, changed] of [
+    ['treeDigest', { treeDigest: 'c'.repeat(64) }],
+    ['configFingerprint', { configFingerprint: '{"baselineCommand":"npm run other"}' }],
+    ['isolation', { isolation: 'copy' }],
+    ['harnessFingerprint', { harnessFingerprint: 'd'.repeat(64) }],
+    ['adapter.name', { adapter: { name: 'pytest', grade: 'counted', modulePath: null } }],
+    ['adapter.grade', { adapter: { name: 'node-test', grade: 'exit-code', modulePath: null } }],
+    ['adapter.modulePath', { adapter: { name: 'custom', grade: 'counted', modulePath: '/x/parse.mjs' } }],
+    ['runtime.version', { runtime: { ...BASE_INPUTS.runtime, version: 'v24.0.0' } }],
+    ['runtime.platform', { runtime: { ...BASE_INPUTS.runtime, platform: 'darwin' } }],
+    ['runtime.arch', { runtime: { ...BASE_INPUTS.runtime, arch: 'arm64' } }],
+  ]) {
+    test(`K2: ${name} reaches the key`, () => {
+      assert.notEqual(
+        gateCacheKey({ ...BASE_INPUTS, ...changed }),
+        gateCacheKey(BASE_INPUTS),
+        `${name} is carried in keyInputs but does not change the key -- a measurement made under one `
+        + 'value would be served under another',
+      );
+    });
+  }
+
+  test('K3: an undigestable tree yields no digest rather than a shared one', () => {
+    // The fail-closed contract, at the layer that owns it. `unhashable` as a
+    // shared constant here is what let two trees differing inside an embedded
+    // repo or a dirty submodule hash the same.
+    const repo = makeRepo({ files: guardFiles(), config: countingConfig(), label: 'gc-undigestable' });
+    try {
+      const clean = treeDigest(repo.root);
+      assert.equal(clean.reason, null);
+      assert.equal(typeof clean.digest, 'string');
+
+      // An embedded untracked repository: the one shape `-uall` collapses to a
+      // single entry instead of expanding to files (a plain untracked directory
+      // is expanded, and stays digestable).
+      mkdirSync(path.join(repo.root, 'vendor', 'inner'), { recursive: true });
+      git(path.join(repo.root, 'vendor', 'inner'), ['init', '-q', '.']);
+      write(repo.root, 'vendor/inner/one.txt', 'one\n');
+      const first = treeDigest(repo.root);
+      assert.equal(first.digest, null, 'a collapsed directory entry must not be digestable');
+      assert.match(first.reason, /vendor\/inner/);
+
+      // And the false hit it used to permit: entirely different contents, same
+      // porcelain line. Two nulls cannot collide into a shared key.
+      write(repo.root, 'vendor/inner/one.txt', 'COMPLETELY DIFFERENT\n');
+      write(repo.root, 'vendor/inner/two.txt', 'and another\n');
+      assert.equal(treeDigest(repo.root).digest, null);
+    } finally { repo.cleanup(); }
+  });
+
+  test('K4: the exec bit is in the digest', () => {
+    // `chmod +x` with byte-identical content is reported by porcelain, so the
+    // path is in the digest list -- and hashing content alone left the digest
+    // unmoved, handing an exec-bit-dependent suite a gate answer from the other
+    // mode under the same key.
+    const repo = makeRepo({ files: guardFiles(), config: countingConfig(), label: 'gc-mode' });
+    try {
+      const before = treeDigest(repo.root);
+      chmodSync(path.join(repo.root, 'src/guard.mjs'), 0o755);
+      const after = treeDigest(repo.root);
+      assert.equal(after.reason, null, 'a mode change must still be digestable');
+      assert.notEqual(after.digest, before.digest, 'a chmod with identical bytes must move the digest');
+      // And it is the mode alone doing it: restoring it restores the digest.
+      chmodSync(path.join(repo.root, 'src/guard.mjs'), 0o644);
+      assert.equal(treeDigest(repo.root).digest, before.digest);
+    } finally { repo.cleanup(); }
+  });
+
+  test('K5: an unborn HEAD is a miss, never a throw', () => {
+    // The gates ran fine on a zero-commit repo before this module existed, so
+    // introducing one must not turn that into a refusal.
+    const root = mkdtempSync(path.join(os.tmpdir(), 'code-mutant-unborn-'));
+    try {
+      git(root, ['init', '-q', '.']);
+      const result = treeDigest(root);
+      assert.equal(result.digest, null);
+      assert.match(result.reason, /unborn/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 describe('gate cache', () => {
   test('G1: a second identical run serves both gates and measures neither', async () => {
     const counter = makeCounter();
@@ -178,6 +281,11 @@ describe('gate cache', () => {
       const first = await runJson(repo, ['baseline', '--json'], counter.env);
       assert.equal(first.report.gateCache.status, 'miss');
 
+      // POSITIVE CONTROL: the unchanged tree hits. Without it a miss below is
+      // indistinguishable from a fixture that never hits at all.
+      const control = await runJson(repo, ['baseline', '--json'], counter.env);
+      assert.equal(control.report.gateCache.status, 'hit', 'the control must hit, or G3 proves nothing');
+
       write(repo.root, 'src/guard.mjs', `${readFileSync(path.join(repo.root, 'src/guard.mjs'), 'utf8')}\nexport const extra = 1;\n`);
       git(repo.root, ['add', '-A']);
       git(repo.root, ['commit', '-qm', 'edit the source']);
@@ -203,6 +311,11 @@ describe('gate cache', () => {
       assert.equal(gateEntries(repo).length, 1, 'the clean run seeded an entry to be tempted by');
       const sha = first.report.mutatedSha;
 
+      // POSITIVE CONTROL, through the same --allow-dirty path the claim uses, so
+      // the miss below is about the worktree edit and not about the flag.
+      const control = await runJson(repo, ['baseline', '--allow-dirty', '--json'], counter.env);
+      assert.equal(control.report.gateCache.status, 'hit', 'the control must hit, or G4 proves nothing');
+
       appendFileSync(path.join(repo.root, 'src/guard.mjs'), '\nexport const uncommitted = 1;\n');
 
       counter.reset();
@@ -217,13 +330,18 @@ describe('gate cache', () => {
   test('G5: an untracked, not-gitignored file is a miss', async () => {
     const repo = makeRepo({ files: guardFiles(), config: countingConfig(), label: 'gc-untracked' });
     try {
-      const first = await runJson(repo, ['probe', '--file', 'src/guard.mjs', '--anchor', "return kind === 'user-defined';", '--replace', 'return false;', '--expect-fail', 'test/guard.test.mjs::allows user-defined backends', '--json']);
+      const probeArgs = ['probe', '--file', 'src/guard.mjs', '--anchor', "return kind === 'user-defined';", '--replace', 'return false;', '--expect-fail', 'test/guard.test.mjs::allows user-defined backends', '--json'];
+      const first = await runJson(repo, probeArgs);
       assert.equal(first.report.gateCache.status, 'miss');
       assert.equal(gateEntries(repo).length, 1);
 
+      // POSITIVE CONTROL: the same probe on the same tree hits.
+      const control = await runJson(repo, probeArgs);
+      assert.equal(control.report.gateCache.status, 'hit', 'the control must hit, or G5 proves nothing');
+
       write(repo.root, 'src/newcomer.mjs', 'export const brandNew = 1;\n');
 
-      const second = await runJson(repo, ['probe', '--file', 'src/guard.mjs', '--anchor', "return kind === 'user-defined';", '--replace', 'return false;', '--expect-fail', 'test/guard.test.mjs::allows user-defined backends', '--json']);
+      const second = await runJson(repo, probeArgs);
       assert.equal(second.report.gateCache.status, 'miss', 'an untracked source file is part of what the suite runs');
       assert.equal(second.report.gates.canary.fromCache, false);
     } finally { repo.cleanup(); }
@@ -281,21 +399,37 @@ describe('gate cache', () => {
       const after = harnessFingerprint({ root: copy });
       assert.notEqual(after, before, 'a changed harness source must change the fingerprint');
 
-      // (b) the lookup layer: an entry filed under fingerprint A is not served
-      // under fingerprint B. Simulated by rewriting the entry's key, which is
-      // the only thing the lookup consults.
+      // (b) THAT THE FINGERPRINT REACHES THE KEY THE RUNNER FILES UNDER. The
+      // previous version of this claim wrote a second file under a synthetic key
+      // and asserted the run found its own -- which only exercised the filename
+      // lookup, and passed just as well with the fingerprint hardcoded to a
+      // constant. What pins it is the round trip: the entry records the inputs,
+      // and the name it is filed under must be the key derived from exactly
+      // those inputs, with the harness fingerprint among them being the LIVE
+      // digest of this harness.
       const first = await runJson(repo, ['baseline', '--json']);
       assert.equal(first.report.gateCache.status, 'miss');
       const [file] = gateEntries(repo);
       const entry = readGateEntryFile(repo, file);
-      const otherKey = `${entry.key.slice(0, 30)}${entry.key.slice(30) === 'ff' ? 'ee' : 'ff'}`;
-      writeFileSync(
-        path.join(repo.root, '.mutation', 'gates', `${otherKey}.json`),
-        `${JSON.stringify({ ...entry, key: otherKey, keyInputs: { ...entry.keyInputs, harnessFingerprint: after } }, null, 2)}\n`,
+
+      assert.equal(
+        entry.keyInputs.harnessFingerprint,
+        harnessFingerprint(),
+        'the runner must key on the live harness digest, not a constant',
       );
-      const second = await runJson(repo, ['baseline', '--json']);
-      assert.equal(second.report.gateCache.status, 'hit', 'the run must still find ITS key, not the other one');
-      assert.equal(second.report.gateCache.key, entry.key);
+      assert.equal(
+        gateCacheKey(entry.keyInputs),
+        entry.key,
+        'the filed key must be derived from exactly the inputs recorded beside it',
+      );
+      assert.equal(`${entry.key}.json`, file);
+      assert.equal(entry.key, first.report.gateCache.key);
+      // And the same round trip fails the moment any recorded input is not the
+      // one the key was built from -- the property the assertion above rests on.
+      assert.notEqual(
+        gateCacheKey({ ...entry.keyInputs, harnessFingerprint: after }),
+        entry.key,
+      );
     } finally { repo.cleanup(); rmSync(scratch, { recursive: true, force: true }); }
   });
 
@@ -349,6 +483,11 @@ describe('gate cache', () => {
       const first = await runJson(repo, probeArgs, counter.env);
       assert.equal(first.report.gateCache.status, 'miss');
       assert.equal(gateEntries(repo).length, 1, 'the clean tree seeded an entry');
+
+      // POSITIVE CONTROL: probe on the same clean tree hits, so the miss below
+      // is the residue and not `probe` simply never hitting.
+      const control = await runJson(repo, probeArgs, counter.env);
+      assert.equal(control.report.gateCache.status, 'hit', 'the control must hit, or G9 proves nothing');
 
       appendFileSync(path.join(repo.root, 'src/guard.mjs'), '\n// leftover mutation\n');
 
@@ -444,6 +583,15 @@ describe('gate cache', () => {
       assert.equal(second.report.gates.canary.fromCache, false);
       assert.equal(second.report.gates.canary.outcome, 'failed');
       assert.deepEqual(gateEntries(repo), []);
+
+      // POSITIVE CONTROL, in this very fixture and against this very tree: swap
+      // the lying command for a truthful one in process (the tree is untouched,
+      // so nothing but the command moves) and the write path fires. Without it,
+      // deleting the write path outright would pass everything above.
+      const truthful = await runInProcess(repo, [], { baselineCommand: 'node --test' });
+      assert.equal(truthful.gates.canary.status, 'KILLED', truthful.gates.canary.detail);
+      assert.equal(truthful.gateCache.wrote, true, 'the write path must work here, or G12 proves nothing');
+      assert.equal(gateEntries(repo).length, 1);
     } finally { repo.cleanup(); rmSync(scratch, { recursive: true, force: true }); }
   });
 
@@ -546,11 +694,20 @@ describe('gate cache', () => {
 
       for (const [why, corrupt] of [
         ['not JSON', 'not json at all\n'],
+        ['unreadable', null],
         ['wrong schemaVersion', `${JSON.stringify({ ...entry, schemaVersion: 99 })}\n`],
         ['key mismatch', `${JSON.stringify({ ...entry, key: 'deadbeef'.repeat(4) })}\n`],
         ['missing a gate record', `${JSON.stringify({ ...entry, gates: { baseline: entry.gates.baseline } })}\n`],
       ]) {
-        writeFileSync(abs, corrupt);
+        if (corrupt === null) {
+          // A crafted entry must not be able to DENY the run: an unreadable file
+          // is exactly as much a miss as an unparseable one.
+          writeFileSync(abs, '{}');
+          chmodSync(abs, 0o000);
+        } else {
+          chmodSync(abs, 0o644);
+          writeFileSync(abs, corrupt);
+        }
         const rerun = await runJson(repo, ['baseline', '--json']);
         assert.equal(rerun.exitCode, 0, `${why}: ${rerun.stderr}`);
         assert.equal(rerun.report.gateCache.status, 'miss', why);
@@ -558,9 +715,74 @@ describe('gate cache', () => {
         assert.match(rerun.stderr, /gate cache: ignoring/, why);
         // And it is REPLACED rather than left to be re-diagnosed every run.
         assert.equal(rerun.report.gateCache.wrote, true, why);
+        chmodSync(abs, 0o644);
         assert.equal(readGateEntryFile(repo, file).key, first.report.gateCache.key, why);
       }
     } finally { repo.cleanup(); }
+  });
+
+  test('G19: a tree that cannot be keyed is a forced miss that writes nothing', async () => {
+    // The end-to-end half of K3. An embedded untracked repository collapses to a
+    // single porcelain entry whose contents vary freely underneath it, and
+    // `probe` is the reachable path: it only WARNS on a dirty tree, and leaves
+    // `reproducible: true`, so the write condition that stops --allow-dirty does
+    // not stop this. Before the fail-closed fix, run 2 below was a HIT.
+    const repo = makeRepo({ files: guardFiles(), config: countingConfig(), label: 'gc-unkeyable' });
+    try {
+      const probeArgs = ['probe', '--file', 'src/guard.mjs', '--anchor', "return kind === 'user-defined';", '--replace', 'return false;', '--expect-fail', 'test/guard.test.mjs::allows user-defined backends', '--json'];
+
+      // CONTROL: this fixture hits before the embedded repo appears, so the
+      // misses below are the unkeyable tree and not a fixture that never hits.
+      await runJson(repo, probeArgs);
+      const control = await runJson(repo, probeArgs);
+      assert.equal(control.report.gateCache.status, 'hit', 'the control must hit, or G19 proves nothing');
+
+      mkdirSync(path.join(repo.root, 'vendor', 'inner'), { recursive: true });
+      git(path.join(repo.root, 'vendor', 'inner'), ['init', '-q', '.']);
+      write(repo.root, 'vendor/inner/one.txt', 'one\n');
+      const seeded = gateEntries(repo).length;
+
+      const first = await runJson(repo, probeArgs);
+      assert.equal(first.exitCode, 0, first.stderr);   // the run itself is unaffected: the mutant is KILLED
+      assert.equal(first.report.gateCache.status, 'miss');
+      assert.equal(first.report.gateCache.key, null, 'no key may be derived from a tree it cannot tell apart');
+      assert.equal(first.report.gateCache.wrote, false);
+      assert.match(first.report.gateCache.writeSkipped, /vendor\/inner/);
+      assert.equal(first.report.gates.baseline.fromCache, false);
+
+      // Entirely different contents, identical porcelain line: the shape that
+      // used to collide into one key.
+      write(repo.root, 'vendor/inner/one.txt', 'COMPLETELY DIFFERENT\n');
+      write(repo.root, 'vendor/inner/two.txt', 'and another\n');
+      const second = await runJson(repo, probeArgs);
+      assert.equal(second.report.gateCache.status, 'miss');
+      assert.equal(second.report.gates.baseline.fromCache, false);
+      assert.equal(gateEntries(repo).length, seeded, 'an unkeyable tree must file no entry');
+    } finally { repo.cleanup(); }
+  });
+
+  test('G20: an unborn HEAD still runs the gates instead of refusing', async () => {
+    // A zero-commit repo ran the gates fine before the cache existed, and the
+    // cache must not turn that into a usage error with no gate record at all.
+    const root = mkdtempSync(path.join(os.tmpdir(), 'code-mutant-gc-unborn-'));
+    try {
+      git(root, ['init', '-q', '.']);
+      git(root, ['config', 'user.email', 'test@example.invalid']);
+      git(root, ['config', 'user.name', 'code-mutant test']);
+      for (const [rel, body] of Object.entries(guardFiles())) write(root, rel, body);
+      write(root, '.gitignore', '.mutation/\n');
+      write(root, path.join('harness', 'mutation', 'config.json'), `${JSON.stringify(countingConfig(), null, 2)}\n`);
+
+      const result = await runCli(['baseline', '--allow-dirty', '--json'], { cwd: root, timeoutMs: 300_000 });
+      const report = JSON.parse(result.stdout);
+      assert.equal(report.mutatedSha, null, 'the fixture must really have no commit');
+      // A gate RECORD, which a thrown usage error would not produce at all.
+      assert.equal(report.gates.baseline.outcome, 'passed', JSON.stringify(report.gates.baseline));
+      assert.notEqual(result.exitCode, 4, `an unborn HEAD must not be a usage error: ${result.stderr}`);
+      assert.equal(report.gateCache.key, null);
+      assert.equal(report.gateCache.wrote, false);
+      assert.match(report.gateCache.writeSkipped, /unborn/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   test('G18: --remeasure-gates is a usage error on the commands that run no gate', async () => {
