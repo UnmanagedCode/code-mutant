@@ -144,7 +144,10 @@ describe('gate cache key', () => {
     ['harnessFingerprint', { harnessFingerprint: 'd'.repeat(64) }],
     ['adapter.name', { adapter: { name: 'pytest', grade: 'counted', modulePath: null } }],
     ['adapter.grade', { adapter: { name: 'node-test', grade: 'exit-code', modulePath: null } }],
-    ['adapter.modulePath', { adapter: { name: 'custom', grade: 'counted', modulePath: '/x/parse.mjs' } }],
+    // `name` and `grade` held at the base values, so this case can only pass on
+    // `modulePath`: varying the name too would let it survive `modulePath`
+    // being dropped from the key.
+    ['adapter.modulePath', { adapter: { name: 'node-test', grade: 'counted', modulePath: '/x/parse.mjs' } }],
     ['runtime.version', { runtime: { ...BASE_INPUTS.runtime, version: 'v24.0.0' } }],
     ['runtime.platform', { runtime: { ...BASE_INPUTS.runtime, platform: 'darwin' } }],
     ['runtime.arch', { runtime: { ...BASE_INPUTS.runtime, arch: 'arm64' } }],
