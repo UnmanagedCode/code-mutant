@@ -87,9 +87,8 @@ command syntax, `mutate.mjs --help` or the project's `harness/mutation/README.md
   the very key the bug destroys, or the invariant is double-guarded (re-run as a multi-site mutant
   against the same claim before reporting).
 - `IMPRECISE` → the mutant itself is invalid (too broad, or an equivalent mutant) — rewrite it
-  smaller and re-run; don't report it as a finding. When more than one needs re-authoring, fix them
-  all and re-run **once**: a re-run re-pays the gates (~91% of a rework round), so N separate
-  re-runs pay that N times.
+  smaller and re-run; don't report it as a finding. A re-run against an unchanged tree serves the
+  gates from cache, so a rework costs only the mutants you re-run.
 - `TIMEOUT` → the mutation hung the scope: the same scope completed unmutated moments earlier, so
   rewrite the mutant smaller. A hung *unmutated* scope arrives as `ERROR` instead — next bullet.
 - `ERROR` → a harness or catalog problem (stale anchor, unusable scope) — fix or drop the mutant,

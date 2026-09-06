@@ -176,7 +176,9 @@ in either direction. See `lib/occupancy.mjs`.
 ### Three trust gates
 
 Before any verdict above is believable, three gates run first — and there is deliberately no way to
-skip them short of `--allow-dirty`:
+skip them short of `--allow-dirty`. The baseline and canary may be *served* rather than re-measured
+when this exact tree has already been measured ([Gate caching](#gate-caching)); a served gate is
+labelled and its outcome is verbatim, so it is never a skipped one.
 
 - **clean-tree** — mutation must run against committed state, so a survivor is re-runnable against a
   sha by anyone and a restore bug degrades from destroying unrecoverable work to a recoverable git
@@ -203,6 +205,33 @@ invocation is then labelled non-reproducible — a `repro` column reading `NO (d
 `mutatedSha`, so a survivor can be pointed at the exact commit it was found against. The gate
 records' full shapes are in [`mutants.schema.md`](mutants.schema.md#the-clean-tree-gate).
 
+### Gate caching
+
+The baseline and canary are a fixed cost paid once per invocation, independent of mutant count — two
+full `baselineCommand` runs, measured at ~98.6% of a single-mutant invocation on this workspace's
+own suite. Both records are cached at **`.mutation/gates/<key>.json`** and served on a repeat run
+against an unchanged tree.
+
+The key covers a **tree digest** (`HEAD^{tree}` plus a byte hash of every path `git status` reports,
+so a hit means *byte-identical worktree*, not *same commit*), the resolved commands, the adapter,
+the isolation mode, a digest of this harness's own source, and the node version/platform/arch. Any
+of those differing is a miss. A tree no key can describe — an unborn HEAD, or a path git names whose
+bytes it cannot read, such as an untracked embedded repository or a submodule with dirty contents —
+is a **forced miss that writes nothing**, since an entry filed under a key that cannot tell its own
+tree apart is exactly the false hit the cache must not produce. Deliberately **not** in the key: `jobs` (the gates run serially in
+Phase A, before any concurrency exists), the gitignored `.mutation/` catalog — so reworking an
+`IMPRECISE` mutant and re-running costs no gates — and **gitignored state the suite reads**
+(`node_modules/`, a `.env`, a local DB, environment variables). That last one is the one real
+exposure: `--remeasure-gates` skips the lookup, measures both gates in full and overwrites the entry,
+and is the correction path when a key matches but something outside it moved.
+
+A served gate is never dressed up as a measured one: its outcome is verbatim (`not-established` stays
+`not-established`), `fromCache: true` sits beside it in `--json` and on the printed gate line, and the
+report carries a `GATES FROM CACHE` banner. An entry is written only by a run that proved it left no
+trace, so a run killed mid-mutation re-pays the gates rather than caching a tree it may have
+poisoned. Full contract — key inputs, write conditions, the crash-window ordering — is in
+[`mutants.schema.md`](mutants.schema.md#caching-the-gates).
+
 ## The mutant catalog
 
 Per-review, gitignored, lives at `.mutation/mutants.json`, owned by the prover. The full
@@ -212,7 +241,8 @@ authoritative format; this README only covers what the catalog is for.
 Alongside it, `run` appends every completed verdict to a **journal** under `.mutation/journal/`, so
 an interrupted run can be resumed with `run --resume` instead of re-measuring everything it already
 graded. Contract — which key, what invalidates it, and the two things resume never does — is in
-[`mutants.schema.md`](mutants.schema.md#resuming-a-run).
+[`mutants.schema.md`](mutants.schema.md#resuming-a-run). Resume reuses per-mutant verdicts only; the
+gates are a separate decision on a separate key ([Gate caching](#gate-caching)).
 
 A site is either an anchor + replacement (a substring swap, refused unless the anchor matches
 exactly once and the replacement isn't a no-op) or a unified `patch` applied with `git apply`, for
@@ -227,6 +257,7 @@ hand-authored; the runner doesn't invent structural edits.
 | **Canary** | One gate check. | No — never written to the repo. |
 | **Mutant catalog + results** (`.mutation/`) | One review loop — the *what*, for one task. | No — gitignored, dies with the worktree. |
 | **Verdict journal** (`.mutation/journal/`) | One review loop. Read only by `run --resume`. | No — gitignored, dies with the worktree. |
+| **Gate cache** (`.mutation/gates/`) | One review loop. Read by every gate-running command; `--remeasure-gates` bypasses and refreshes it. | No — gitignored, dies with the worktree. |
 
 Mutants are scaffolding: once a mutant proves a test stands, the *test* is the durable artifact and
 the mutant has done its job. Keeping a catalog past merge buys little (nothing in the workspace's
@@ -239,16 +270,17 @@ Stack-agnostic; the test command is always a shell string. Invoked directly, fro
 `harness/mutation/config.json` is resolved for the current project:
 
 ```
-node mutate.mjs baseline                    [--copy|--in-place] [--allow-dirty] [--json]
+node mutate.mjs baseline                    [--copy|--in-place] [--allow-dirty]
+                                            [--remeasure-gates] [--json]
 node mutate.mjs run [--id <id> ...] [--all] [--learn] [--copy|--in-place] [--jobs N]
-                    [--base <branch>] [--allow-dirty] [--resume] [--json]
+                    [--base <branch>] [--allow-dirty] [--resume] [--remeasure-gates] [--json]
 node mutate.mjs validate                    [--json]
 node mutate.mjs probe --file <path> --anchor <text> --replace <text>
                       [--learn] [--expect-fail <test> ...] [--expect-pass <test> ...]
-                      [--copy|--in-place] [--json]
+                      [--copy|--in-place] [--remeasure-gates] [--json]
 node mutate.mjs probe --patch-file <path>   [--learn] [--expect-fail <test> ...]
-                      [--expect-pass <test> ...] [--copy|--in-place] [--json]
-node mutate.mjs probe --id <id>             [--copy|--in-place] [--json]
+                      [--expect-pass <test> ...] [--copy|--in-place] [--remeasure-gates] [--json]
+node mutate.mjs probe --id <id>             [--copy|--in-place] [--remeasure-gates] [--json]
 node mutate.mjs candidates [--base <branch>] [--json]
 ```
 
@@ -287,7 +319,8 @@ subcommand is *for*.
   `git diff <base>...HEAD`.
 
 **Shared flags:** `--copy` / `--in-place` override `config.json`'s `isolation` for one invocation.
-`--json` puts the
+`--remeasure-gates` (`baseline`/`run`/`probe`) skips the gate cache and re-measures both gates, then
+overwrites the cached entry — see [Gate caching](#gate-caching). `--json` puts the
 machine report on stdout instead of the printed matrix; either way `run` and `probe` always write
 the same object to `.mutation/results/<runId>.json`, and refuse outright if `.mutation/` isn't
 gitignored. Exit code is non-zero whenever any un-waived mutant survived — a signal a conductor can

@@ -35,16 +35,17 @@ import { WorkspaceError, findRepoRoot } from './lib/workspace.mjs';
 const HELP = `code-mutant -- mutation-verified coverage proving
 
 USAGE
-  node mutate.mjs baseline                    [--copy|--in-place] [--allow-dirty] [--json]
+  node mutate.mjs baseline                    [--copy|--in-place] [--allow-dirty]
+                                              [--remeasure-gates] [--json]
   node mutate.mjs run [--id <id> ...] [--all] [--learn] [--copy|--in-place] [--jobs N]
-                      [--base <branch>] [--allow-dirty] [--resume] [--json]
+                      [--base <branch>] [--allow-dirty] [--resume] [--remeasure-gates] [--json]
   node mutate.mjs validate                    [--json]
   node mutate.mjs probe --file <path> --anchor <text> --replace <text>
                         [--learn] [--expect-fail <test> ...] [--expect-pass <test> ...]
-                        [--copy|--in-place] [--json]
+                        [--copy|--in-place] [--remeasure-gates] [--json]
   node mutate.mjs probe --patch-file <path>   [--learn] [--expect-fail <test> ...]
-                        [--expect-pass <test> ...] [--copy|--in-place] [--json]
-  node mutate.mjs probe --id <id>             [--copy|--in-place] [--json]
+                        [--expect-pass <test> ...] [--copy|--in-place] [--remeasure-gates] [--json]
+  node mutate.mjs probe --id <id>             [--copy|--in-place] [--remeasure-gates] [--json]
   node mutate.mjs candidates [--base <branch>] [--json]
 
 COMMANDS
@@ -57,7 +58,10 @@ COMMANDS
                resolve site(s) -> refuse an ambiguous or no-op edit -> measure the
                narrow scope unmutated -> apply -> run -> classify -> restore.
                All three gates run first; there is deliberately no way to skip
-               them short of --allow-dirty.
+               them short of --allow-dirty. The baseline and canary may be SERVED
+               from the gate cache rather than measured again -- a measurement
+               keyed on this exact tree, labelled fromCache and never promoted;
+               --remeasure-gates forces both. See TRUST GATES.
   validate     Resolve every catalog site against the working tree and report
                what would refuse -- RUNNING NO TESTS, so it returns in about a
                second. A pre-flight, NOT a gate: it establishes nothing and
@@ -101,11 +105,16 @@ FLAGS
                      non-reproducible, in both the matrix and --json.
   --resume           run: reuse per-mutant verdicts already journalled for this
                      exact sha, config, adapter, isolation and jobs, instead of
-                     re-measuring them. Every gate still runs in full, so a
-                     resumed run still pays the baseline and canary. Opt-in:
-                     a reused verdict is one an unwatched process produced, and
-                     it is labelled fromJournal so it never reads as one this
-                     run made. Incompatible with --allow-dirty.
+                     re-measuring them. Resume itself never reuses a gate; the
+                     gate cache may still serve one (see --remeasure-gates).
+                     Opt-in: a reused verdict is one an unwatched process
+                     produced, and it is labelled fromJournal so it never reads
+                     as one this run made. Incompatible with --allow-dirty.
+  --remeasure-gates  baseline/run/probe: skip the gate CACHE lookup, measure the
+                     baseline and canary in full, and overwrite the cached entry
+                     for this key. The correction path when a key matches but
+                     something outside the key changed -- a fresh npm install, an
+                     edited .env, any gitignored state the suite reads.
   --file <path>      probe: file to mutate.
   --anchor <text>    probe: exact substring to replace; must match exactly once.
   --replace <text>   probe: replacement text; must differ from the anchor.
@@ -213,6 +222,13 @@ TRUST GATES
                      branch HEAD is already on.
   baseline           See the baseline command above.
   canary             Synthesised per run, never committed; see mutants.schema.md.
+  Both of those two are MEASURED once per tree and cached under .mutation/gates/,
+  keyed on the worktree's bytes, the resolved commands, the adapter, the isolation
+  mode, this harness's own source and the runtime. A served gate carries
+  fromCache: true everywhere it appears and its outcome verbatim -- nothing is
+  promoted to passed. Any of those inputs differing is a miss. Gitignored state
+  the suite reads (node_modules, a .env, a local DB) is NOT in the key:
+  --remeasure-gates is the correction path. Full contract: mutants.schema.md.
 
 RESTORE
   copy      -- restore is discarding the copy, which was taken from the working
@@ -234,6 +250,7 @@ The catalog format is specified in mutants.schema.md, which also documents the
 
 const BOOLEAN_FLAGS = new Set([
   '--all', '--copy', '--in-place', '--json', '--help', '-h', '--allow-dirty', '--learn', '--resume',
+  '--remeasure-gates',
 ]);
 const REPEATABLE_FLAGS = new Set(['--id', '--expect-fail', '--expect-pass']);
 const VALUE_FLAGS = new Set([
@@ -271,6 +288,8 @@ export function parseArgs(argv) {
   return parsed;
 }
 
+const REMEASURE_OUT_OF_SCOPE = '--remeasure-gates only applies to `baseline`, `run` and `probe` -- the commands that run the gates (try --help)';
+
 function isolationOverride(flags) {
   if (flags['--copy'] && flags['--in-place']) {
     throw new Error('--copy and --in-place are mutually exclusive');
@@ -284,7 +303,9 @@ function runId() {
   return `${new Date().toISOString().replace(/[:.]/g, '-')}`;
 }
 
-async function buildContext(flags, log, { allowBaseOverride = false, allowLearn = false } = {}) {
+async function buildContext(flags, log, {
+  allowBaseOverride = false, allowLearn = false, allowRemeasure = false,
+} = {}) {
   const repoRoot = findRepoRoot(process.cwd());
   const jobsFlag = flags['--jobs'] === undefined ? undefined : Number(flags['--jobs']);
   if (jobsFlag !== undefined && (!Number.isInteger(jobsFlag) || jobsFlag < 1)) {
@@ -295,6 +316,9 @@ async function buildContext(flags, log, { allowBaseOverride = false, allowLearn 
   }
   if (!allowLearn && flags['--learn']) {
     throw new Error('--learn only applies to `run` and `probe` (try --help)');
+  }
+  if (!allowRemeasure && flags['--remeasure-gates']) {
+    throw new Error(REMEASURE_OUT_OF_SCOPE);
   }
   const config = loadConfig({
     repoRoot,
@@ -325,7 +349,7 @@ function emit(report, flags) {
 }
 
 async function commandBaseline(flags, log) {
-  const { config, adapter } = await buildContext(flags, log);
+  const { config, adapter } = await buildContext(flags, log, { allowRemeasure: true });
   // Both gates and nothing else: `execute` with an empty mutant list runs the
   // baseline measurement and the canary, which is what the reviewer's gate step
   // needs to see in one command. The clean-tree check runs here too (a baseline
@@ -333,14 +357,21 @@ async function commandBaseline(flags, log) {
   // into a real review), but not the empty-diff-vs-base check: baseline does not
   // touch catalog entries, so there is nothing "no committed work" would protect.
   const report = await execute({
-    config, adapter, mutants: [], log, allowDirty: Boolean(flags['--allow-dirty']),
+    config,
+    adapter,
+    mutants: [],
+    log,
+    allowDirty: Boolean(flags['--allow-dirty']),
+    remeasureGates: Boolean(flags['--remeasure-gates']),
   });
   report.command = 'baseline';
   return emit(report, flags);
 }
 
 async function commandRun(flags, lists, log) {
-  const { config, adapter, repoRoot } = await buildContext(flags, log, { allowBaseOverride: true, allowLearn: true });
+  const { config, adapter, repoRoot } = await buildContext(flags, log, {
+    allowBaseOverride: true, allowLearn: true, allowRemeasure: true,
+  });
   const ids = lists['--id'] ?? [];
   if (!ids.length && !flags['--all']) {
     throw new Error('run needs either --all or at least one --id (refusing to guess which mutants you meant)');
@@ -374,6 +405,7 @@ async function commandRun(flags, lists, log) {
     base: config.baseBranch,
     learn: Boolean(flags['--learn']),
     resume: Boolean(flags['--resume']),
+    remeasureGates: Boolean(flags['--remeasure-gates']),
     journalling: true,
   });
   report.command = 'run';
@@ -386,7 +418,8 @@ async function commandRun(flags, lists, log) {
   if (report.resumable) {
     log(`resumable: ${report.resumable.available} verdict(s) for this exact sha and config are already `
       + `journalled (key ${report.resumable.key}). Re-run with --resume to reuse them instead of `
-      + 're-measuring; the gates re-run either way.');
+      + 're-measuring. Resume itself never reuses a gate, but an unchanged tree serves both from the '
+      + 'gate cache; --remeasure-gates forces them.');
   }
   if (!flags['--json']) log(`results: ${report.resultsFile}`);
   return code;
@@ -434,7 +467,9 @@ function probeForm(flags, ids) {
 }
 
 async function commandProbe(flags, lists, log) {
-  const { config, adapter, repoRoot } = await buildContext(flags, log, { allowLearn: true });
+  const { config, adapter, repoRoot } = await buildContext(flags, log, {
+    allowLearn: true, allowRemeasure: true,
+  });
   const ids = lists['--id'] ?? [];
   const form = probeForm(flags, ids);
   const learn = Boolean(flags['--learn']);
@@ -484,7 +519,13 @@ async function commandProbe(flags, lists, log) {
   }
 
   const report = await execute({
-    config, adapter, mutants: [mutant], log, enforceCleanTree: false, learn,
+    config,
+    adapter,
+    mutants: [mutant],
+    log,
+    enforceCleanTree: false,
+    learn,
+    remeasureGates: Boolean(flags['--remeasure-gates']),
   });
   report.command = 'probe';
   report.resultsFile = writeResults(repoRoot, `probe-${runId()}`, toJson(report));
@@ -525,6 +566,12 @@ function configuredBaseBranch(repoRoot, log) {
 
 async function commandCandidates(flags, log) {
   const repoRoot = findRepoRoot(process.cwd());
+  // `candidates` does not build a run context, so the flag-scope guards in
+  // buildContext never see it. Stated rather than silently ignored: this command
+  // runs no gate, so there is no measurement for the flag to force.
+  if (flags['--remeasure-gates']) {
+    throw new Error(REMEASURE_OUT_OF_SCOPE);
+  }
   // `--base` alone keeps working in a repo with no harness at all, which is why
   // config is only consulted when the flag is absent -- but when it is absent,
   // baseBranch is the single source of truth `run` already reads, so the two
