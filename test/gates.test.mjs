@@ -155,13 +155,17 @@ describe('canary gate', () => {
     // The baseline passes because the command lies about being green. Only the
     // canary can catch this: a guaranteed-failing test is injected and the command
     // still reports success, which means every mutant would read SURVIVED.
+    //
+    // BOTH commands lie here, and the second half is the load-bearing one: the
+    // canary is established against the command that JUDGES this mutant (its
+    // narrow scope), so that is the command whose lie has to be caught. A fixture
+    // that lied only in `baselineCommand` would be a harness whose verdicts are
+    // all produced by a truthful command, which is not this failure at all.
     const scratch = mkdtempSync(path.join(os.tmpdir(), 'code-mutant-liar-'));
+    const liar = `CM_FAKE_ALWAYS_GREEN=1 CM_FAKE_STATE=${JSON.stringify(path.join(scratch, 's'))} node ${JSON.stringify(STAGED)}`;
     const repo = makeRepo({
       files: guardFiles(),
-      config: {
-        baselineCommand: `CM_FAKE_ALWAYS_GREEN=1 CM_FAKE_STATE=${JSON.stringify(path.join(scratch, 's'))} node ${JSON.stringify(STAGED)}`,
-        isolation: 'copy',
-      },
+      config: { baselineCommand: liar, testCommand: `${liar} {tests}`, isolation: 'copy' },
       label: 'lying-command',
     });
     try {
@@ -169,8 +173,12 @@ describe('canary gate', () => {
       assert.equal(report.gates.baseline.outcome, 'passed', 'the liar passes the baseline gate');
       assert.equal(report.gates.canary.outcome, 'failed');
       assert.equal(report.gates.canary.status, CanaryStatus.FAILED);
+      assert.equal(report.gates.canary.scope, 'narrow', 'the judging command is what was attested');
       assert.match(report.gates.canary.detail, /still reported no failures/);
       assert.match(report.gates.canary.detail, /every finding would be false/);
+      // The failing scope is NAMED, so the refusal points at a command rather
+      // than at "the harness".
+      assert.match(report.gates.canary.detail, /test\/guard\.test\.mjs/);
       assert.deepEqual(report.results, [], 'no verdicts from an unverified harness');
       assert.equal(exitCodeFor(report), ExitCode.GATE_FAILED);
     } finally { repo.cleanup(); rmSync(scratch, { recursive: true, force: true }); }
@@ -590,20 +598,47 @@ describe('custom adapter canary prerequisites', () => {
 
   test('NO testFilePatterns is not a refusal: the mutants\' own scopes establish the gate', async () => {
     // THE REGRESSION PIN. Measured: this exact adapter fails a bare `baseline`
-    // (no mutants => no preferred files) and passes `run` (the mutant's narrow
-    // scope seeds preferredFiles) -- and after this run journals its canary
-    // target, the same bare `baseline` passes too, because the journalled target
-    // is fed back in as a preferred file. So "no testFilePatterns" is a property
-    // of the invocation, not of the adapter: keying a pre-flight refusal on it
-    // would refuse a harness that demonstrably works. Only a missing canary() is
-    // unestablishable in every repo state.
-    const repo = customRepo('custom-no-patterns', `export { parse, canary } from ${JSON.stringify(NODE_TEST_MODULE)};\n`);
+    // (no mutants => no preferred files) and passes `run` -- so "no
+    // testFilePatterns" is a property of the invocation, not of the adapter, and
+    // keying a pre-flight refusal on it would refuse a harness that demonstrably
+    // works. Only a missing canary() is unestablishable in every repo state.
+    //
+    // BOTH ways a mutant's own scope establishes it, because they are different
+    // code paths and each is the only one for some catalog:
+    //   (a) a narrowable mutant -- the canary runs that mutant's own judging
+    //       command, which names its scope files, so no discovery happens at all;
+    //   (b) an unnarrowable one (here `narrowTo: "names"`, which the canary
+    //       deliberately cannot follow) -- the baseline-scope canary runs, and the
+    //       mutant's scopes are the ONLY source of candidates a patternless
+    //       adapter has. This is the path lib/validate.mjs's
+    //       `adapter-no-test-patterns` prose promises works.
+    //
+    // `canNameFilter` is exported only so the (b) fixture can REACH names mode: a
+    // custom parser that does not declare it is downgraded to file granularity,
+    // which is the narrowable path (a) already covers.
+    const repo = customRepo(
+      'custom-no-patterns',
+      `export { parse, canary } from ${JSON.stringify(NODE_TEST_MODULE)};\nexport const canNameFilter = true;\n`,
+    );
     try {
-      const report = await run(repo, [MUTANT], {}, { allowDirty: true });
-      assert.equal(report.gates.canary.status, CanaryStatus.KILLED);
-      assert.equal(report.gates.canary.target, 'test/guard.test.mjs');
-      assert.equal(report.results[0].verdict, Verdict.KILLED);
-      assert.equal(exitCodeFor(report), ExitCode.CLEAN);
+      const narrowed = await run(repo, [MUTANT], {}, { allowDirty: true });
+      assert.equal(narrowed.gates.canary.status, CanaryStatus.KILLED);
+      assert.equal(narrowed.gates.canary.scope, 'narrow');
+      assert.equal(narrowed.gates.canary.scopes[0].target, 'test/guard.test.mjs');
+      assert.equal(
+        narrowed.gates.canary.target,
+        null,
+        'nothing ran baselineCommand at pure narrow scope, so there is no baseline-half target to name',
+      );
+      assert.equal(narrowed.results[0].verdict, Verdict.KILLED);
+      assert.equal(exitCodeFor(narrowed), ExitCode.CLEAN);
+
+      const byName = await run(repo, [{ ...MUTANT, narrowTo: 'names' }], {}, { allowDirty: true });
+      assert.equal(byName.results[0].narrowing.mode, 'names', 'the fixture must really reach names mode');
+      assert.equal(byName.gates.canary.scope, 'baseline', 'names narrowing falls back to the full command');
+      assert.equal(byName.gates.canary.status, CanaryStatus.KILLED);
+      assert.equal(byName.gates.canary.target, 'test/guard.test.mjs', 'discovered from the mutant\'s own scope');
+      assert.equal(exitCodeFor(byName), ExitCode.CLEAN);
     } finally { repo.cleanup(); }
   });
 });
@@ -655,11 +690,18 @@ describe('narrow baseline (the delta reference, and a second zero-test guard)', 
         expectFail: ['test/broken.test.mjs::already failing'],
       }]);
       assert.equal(report.gates.baseline.outcome, 'passed');
-      // The first canary candidate (test/broken.test.mjs, alphabetically) sits
-      // outside the baseline command's scope, so the gate falls through to a file
-      // that is covered rather than failing the whole run.
-      assert.equal(report.gates.canary.status, CanaryStatus.KILLED);
-      assert.equal(report.gates.canary.target, 'test/guard.test.mjs');
+      // The only mutant's judging command IS the broken scope, so its canary is
+      // not attempted: a canary injected into a scope that is already failing
+      // could attest nothing and could not be told apart from the breakage. The
+      // gate says so as NOT-ESTABLISHED -- never `passed` -- and the mutant still
+      // carries the accurate diagnosis below rather than a canary failure.
+      assert.equal(report.gates.canary.status, CanaryStatus.NOT_ESTABLISHED);
+      assert.equal(report.gates.canary.outcome, 'not-established');
+      assert.equal(report.gates.canary.scope, 'narrow');
+      assert.deepEqual(
+        report.gates.canary.scopes.map((s) => s.skipped),
+        ['narrow-baseline-not-green'],
+      );
       assert.equal(report.results[0].verdict, Verdict.ERROR);
       assert.equal(report.results[0].reason, Reason.SCOPE_NON_GREEN);
     } finally { repo.cleanup(); }

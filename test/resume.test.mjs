@@ -246,16 +246,24 @@ describe('resuming an interrupted run', () => {
     // S5-shaped: baselineCommand is scoped to the LAST module, so the earlier
     // candidates the gate prefers sit outside its scope and their attempts are
     // recorded rather than fired.
+    //
+    // `narrowTo: "names"` is what keeps this claim about the thing it is named
+    // for. The journalled-target HINT reorders BASELINE-SCOPE candidates, and it
+    // is moot at narrow scope -- a narrowed canary takes its candidates from the
+    // command's own scope, so it has no walk to shorten and journals no target.
+    // Name narrowing is the documented way a mutant is judged by a command the
+    // canary cannot follow, which is exactly when the hint is load-bearing.
     const repo = makeRepo({
       files: costFiles({ modules: 4, workIterations: 0 }),
       config: costConfig({ baselineCommand: 'node --test --test-concurrency=1 test/m03.test.mjs' }),
       label: 'resume-canary',
     });
     try {
-      writeCatalog(repo, costMutants(1));
+      writeCatalog(repo, costMutants(1).map((m) => ({ ...m, narrowTo: 'names' })));
 
       const first = await runJson(repo, ['run', '--all', '--json']);
       assert.equal(first.exitCode, 0, first.stderr);
+      assert.equal(first.report.gates.canary.scope, 'baseline', 'names narrowing keeps the gate at baseline scope');
       assert.ok(first.report.gates.canary.attempts.length >= 1, JSON.stringify(first.report.gates.canary));
       assert.equal(first.report.gates.canary.target, 'test/m03.test.mjs');
 

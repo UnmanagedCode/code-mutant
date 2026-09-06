@@ -113,10 +113,53 @@ detect that a file "holds tests the prover deliberately excludes" — only the a
 the report labels it. Use it when the adapter can name-filter and the file holds tests you are
 deliberately leaving out; otherwise leave it at the default.
 
+**The canary follows the narrowing.** The command that judges a mutant is the command the canary
+gate is established against — see [The canary's scope](#the-canarys-scope) below.
+
 In exit-code mode there is no substitution — the whole gate command runs.
 
 Learn mode only: a mutant with no `expectFail`/`expectPass` at all falls back to `baselineCommand`
 (the whole suite) instead of refusing — discovery has no scope to narrow to.
+
+## The canary's scope
+
+No mutant verdict in counted mode comes from `baselineCommand`: every verdict comes from the
+mutant's narrow command, and every delta from that scope's narrow baseline. So the canary is
+established against **each command that judges a mutant**, not against `baselineCommand` — the
+direct form of the proposition ("this command observes a deliberate break") rather than a proxy for
+it. `gates.canary.scope` says which:
+
+| `scope` | When | What ran |
+|---|---|---|
+| `"narrow"` | Every pending mutant is narrow-canary-eligible | One canary per **distinct** `narrowing.command`, injected into that scope's own files |
+| `"baseline"` | Nothing is eligible — including `baseline`, an empty catalog and a fully resumed run | One canary against `baselineCommand`, exactly as before: candidates discovered from `testFilePatterns`, the mutants' scopes and the journalled target |
+| `"mixed"` | Both | Both of the above; `scopes[]` holds the narrow half |
+
+A mutant is **narrow-canary-eligible** only when all of these hold. Each excluded case names a
+harness that is correct and that a narrow canary would wrongly fail, so the rule fails closed:
+
+| Condition | Why |
+|---|---|
+| adapter `grade !== "exit-code"` | Exit-code narrowing is `whole`, and its canary is already established per mutant against the mutant's own site file. |
+| `narrowing.mode === "file"` | `"names"` prepends a name filter that **excludes the injected canary's synthesised label by construction**; `"command"` (a per-mutant `narrowCommand`) and `"whole"` name no file the gate could prove is in scope. |
+| adapter `refsNameFiles === true` | The adapter's own declaration that `scopeOf(ref)` yields a repo file path (`dotnet` returns a declaring type; a custom parser overriding `scopeOf` defaults to `false`). Keyed on the declared interface, never on whether a path happens to exist. |
+| `narrowing.placeholder === true` | `{tests}` was actually substituted, which is what makes "the command names its scope files" true. A `testCommand` without the placeholder runs the same thing for every mutant. |
+| `narrowing.command !== baselineCommand` | The two commands resolving to one string means there is no second command to attest — a `baselineCommand` already scoped to this mutant's file, or the learn-mode no-refs fallback (which is also `mode: "whole"`). |
+| ≥1 file in `narrowing.scopes` exists | A ref naming a file this tree does not have. |
+
+**A scope whose narrow baseline is not green is skipped**, not attested (`scopes[].skipped:
+"narrow-baseline-not-green"`): its mutants already `ERROR` on the scope itself (`scope-non-green`,
+`scope-empty`, `scope-timed-out`), and a canary injected into a broken scope could attest nothing
+and could not be told apart from the breakage.
+
+**The aggregate status**, over the canaries a run *required*:
+
+| Outcome | `status` / `outcome` | Effect |
+|---|---|---|
+| Every required canary fired | `KILLED` / `passed` | Nothing refused. |
+| Some fired, some did not | `PARTIAL` / `partial` | The unattested scopes' mutants are `ERROR` with `canary-not-established`; the rest run and grade. **Not** a gate failure for the exit code — the refused mutants drive it through `noVerdict` (exit 5) instead, and a `CANARY PARTIAL` banner names them at the top of the printed report. |
+| None fired | `FAILED` / `failed` | The wholesale refusal, unchanged: exit 2, `results: []`. |
+| None was required (every scope skipped) | `NOT-ESTABLISHED` / `not-established` | Nothing needed attesting; every mutant `ERROR`s on its own scope. Never read as a pass. |
 
 ## Refusals
 
@@ -139,7 +182,7 @@ shape](#the-shape-of-an-ungraded-result)) — or a usage error before the run:
 | `output-incomplete` | The command exited but its output streams were still open when the drain grace expired, so something else was holding them and the capture may be short. Treated exactly as `output-truncated`: never `SURVIVED`. |
 | `scope-empty` | The narrowed scope ran **zero tests**. Never reported as `SURVIVED`. |
 | `unexplained-exit` | Counted mode: the command exited non-zero while naming **no failing test** — something the adapter cannot see went wrong, so the run is not observably green. Never reported as `SURVIVED`. |
-| `canary-not-established` | Exit-code mode: the gate could not be shown to observe a deliberate break in the mutated file, so its "survivor" means nothing. |
+| `canary-not-established` | The command that would judge this mutant could not be shown to observe a deliberate break, so nothing it reports is interpretable. Two shapes: **exit-code mode**, where the per-mutant canary could not break the mutated file; and **counted mode**, where this mutant's own narrow scope was not attested by the canary gate (`gates.canary.status: "PARTIAL"`) while some other scope was. |
 | `timed-out` | The command was killed at its deadline (`results[].deadlineMs`; `timeoutMs` only for a command with no unmutated reference). |
 | `dirty-tree` | Trust gate, `baseline`/`run` (before baseline and canary): the worktree has uncommitted or untracked-and-not-gitignored changes. `--allow-dirty` overrides it; `probe` only warns. See [The clean-tree gate](#the-clean-tree-gate). |
 | `empty-diff-vs-base` | Trust gate, `run` only: `baseBranch` is configured, distinct from the branch HEAD is on, and there is no diff against it — nothing committed to mutate. See [The clean-tree gate](#the-clean-tree-gate). |
@@ -282,8 +325,18 @@ finding can be pointed at exactly the commit it was found against.
                 failedTests: [string]|null, durationMs, timedOut, detail,   // failedTests: null when nothing is nameable
                 fromCache, measuredDurationMs },           // (exit-code grade, or a FAILED baseline with no parsed
                                                            // failure to name); [] only when green
-    canary:   { outcome, status: "KILLED"|"FAILED"|"NOT-ESTABLISHED", grade, target, durationMs,
-                attempts: [ { target, durationMs, why } ],   // every candidate tried and why it did not fire
+    canary:   { outcome: "passed"|"failed"|"not-established"|"partial",
+                status: "KILLED"|"FAILED"|"NOT-ESTABLISHED"|"PARTIAL",
+                scope: "baseline"|"narrow"|"mixed",   // WHICH COMMAND(S) THIS GATE ATTESTS ABOUT
+                grade, command,                       // command: baselineCommand at baseline/mixed, null at narrow
+                target,                               // the BASELINE half's target; null at pure narrow scope
+                attempts: [ { target, durationMs, why } ],   // the baseline half's: every candidate tried and why
+                scopes: [ {                                  // null when scope === "baseline"
+                  command, target, status, grade, attempts, durationMs, detail,
+                  mutants: [id],                             // which mutants this command judges
+                  skipped: null|"narrow-baseline-not-green"  // no canary was attempted for this scope
+                } ] | null,
+                durationMs,                           // summed across every canary this gate ran
                 detail, fromCache, measuredDurationMs }
   },                                                       // fromCache: true iff served from the gate cache rather
                                                            // than measured here. On a served record durationMs is 0
@@ -297,7 +350,9 @@ finding can be pointed at exactly the commit it was found against.
                key: string|null, file: string|null,   // both null on a FORCED MISS -- a tree no key can describe
                measuredAt: string|null, measuredSha: string|null,   // provenance; non-null only on a hit
                lookupMs,                                            // the cache's OWN cost, not a measured command
-               wrote: boolean, writeSkipped: string|null            // why no entry was written, when none was
+               wrote: boolean, writeSkipped: string|null,           // why no entry was written, when none was
+               canaryServed: boolean               // a hit always serves the baseline; it serves the canary only
+                                                   // when the entry carries one (never at narrow scope)
              } | null,                              // null until the key is computed -- a run that stopped at
                                                     // clean-tree, base-diff or the canary prerequisite has none
   results: [ {
@@ -349,7 +404,8 @@ sums.
 | `timings.narrowBaselinesMs` | Sum of `narrowBaselines[].durationMs` — one measured command per *distinct* scope, so N mutants at one scope cost one entry. |
 | `timings.mutantsMs` | Sum of `results[].durationMs`. A **sum of per-mutant wall clocks**, so under `jobs > 1` it legitimately exceeds `totalMs`. |
 | `results[].applyMs` / `measureMs` / `restoreMs` | The harness's own snapshot+apply and restore cost, versus the project's command. Disjoint slices of that result's `durationMs`; `null` for a phase that never ran (an `ERROR` that stopped before Phase B). The remainder, when there is one, is the per-mutant exit-code canary — its own cost is on `results[].canary.durationMs`. |
-| `gates.canary.attempts[].durationMs` | One entry per candidate that did not establish the gate. An entry whose command **ran** is a whole `baselineCommand` run; an entry the adapter **declined** (its `canary()` returned `null` for that file) ran nothing and carries `durationMs: 0`. Up to 5 candidates are *measured* — declines are not charged to that budget, though the walk still stops after 50 of them — so a project whose early candidates sit outside its `baselineCommand`'s scope pays up to 5× before the gate establishes anything. |
+| `gates.canary.attempts[].durationMs` | **Scope-dependent.** At `scope: "baseline"` (and for the baseline half of `"mixed"`): one entry per candidate that did not establish the gate; an entry whose command **ran** is a whole `baselineCommand` run, and one the adapter **declined** (its `canary()` returned `null` for that file) ran nothing and carries `durationMs: 0`. Up to 5 candidates are *measured* — declines are not charged to that budget, though the walk still stops after 50 of them — so a project whose early candidates sit outside its `baselineCommand`'s scope pays up to 5× before the gate establishes anything. At `scope: "narrow"` the candidates are exactly the files that scope's own command names, so each attempt costs **one narrow run** and the walk is bounded by that scope's file count — in practice one. |
+| `gates.canary.scopes[].durationMs` | One narrow-scope canary. `gates.canary.durationMs` is their sum plus the baseline half's, so the aggregate cannot drift from its parts. A `skipped` scope ran no command and carries `0`. |
 
 ## Deadlines and hang blame
 
@@ -362,6 +418,7 @@ ceiling. `results[].deadlineMs` is what the command actually got.
 | global baseline | none | `timeoutMs` |
 | narrow baseline | none | `timeoutMs` |
 | canary attempt (`scope: 'baseline'`) | the global baseline's `durationMs` — same command | derived |
+| canary attempt (`scope: 'narrow'`) | that scope's narrow-baseline `durationMs` — same command | derived |
 | mutant run | that scope's narrow-baseline `durationMs` — same command | derived |
 | per-mutant canary (`scope: 'mutant'`) | that scope's narrow-baseline `durationMs` | derived |
 | `setup` / `teardown` hooks | none | `timeoutMs` |
@@ -468,16 +525,43 @@ a refusal, never a gate, no effect on the exit code.
 
 ## Caching the gates
 
-The baseline and canary gates are a **fixed cost paid once per invocation**, independent of mutant
-count: two full `baselineCommand` runs. Measured on code-conductor (`npm test` ≈ 67 s, 35-mutant
-catalog): ~135,000 ms, **98.6% of a single-mutant invocation**. Nothing about that work depends on
-which mutants are in the run, so both records are persisted and reused against a tree that has not
-changed.
+The gates are a **fixed cost paid once per invocation**, independent of mutant count. Measured on
+code-conductor (`npm test` ≈ 67 s, 35-mutant catalog) **before the canary was narrowed**, when the
+floor was two full `baselineCommand` runs: ~135,000 ms, **98.6% of a single-mutant invocation**. The
+floor is now one full run plus one narrow run per resolved scope ([The canary's
+scope](#the-canarys-scope)). The baseline half does not depend on which mutants are in the run, so
+it is persisted and reused against a tree that has not changed.
+
+**NARROW-SCOPE CANARIES ARE NEVER CACHED, BY DESIGN — on the serve side as well as the write side.**
+
+- *Write:* `gates.canary` is written to the entry only when the canary ran at `scope: "baseline"`;
+  otherwise the entry records `canary: null` — present, so a reader can tell it from an entry written
+  before the field existed, and legal, so it is served as "the baseline is yours, measure the canary
+  here".
+- *Serve:* a cached canary is served **only when no pending mutant needs narrow attestation**
+  (`needsNarrowCanary`, the same predicate the gate partitions on). `mutate.mjs baseline` files a
+  perfectly legitimate baseline-scope canary against a tree; serving it to a later `run` on that same
+  tree would put the record's claim and the run's verdicts on two different commands — a `SURVIVED`
+  published beside a canary reading `passed` for a command no verdict came from. The baseline half is
+  still served in that case; only the canary half re-measures.
+
+This is what keeps the key's own rationale for excluding the catalog (below) true **verbatim**: a
+narrow canary is derived from the catalog, and two different catalogs against one tree hash to the
+same key.
 
 A hit is **not** "a gate that did not run". It is a measurement keyed on the tree it was made
 against; its outcome is served **verbatim** (`not-established` stays `not-established`, nothing is
-promoted to `passed`) and labelled `fromCache: true` on the record, in `--json`, on the printed gate
-line, and in a top-of-report `GATES FROM CACHE` banner.
+promoted to `passed`) and labelled `fromCache: true` on the record, in `--json` and on the printed
+gate line. `gateCache.canaryServed` says whether the canary half was served, and the top-of-report
+banner has two forms because of it:
+
+- **both served** — `GATES FROM CACHE -- baseline and canary were measured <ts> …`;
+- **baseline only** — `BASELINE FROM CACHE -- … The canary was measured HERE: a narrow-scope canary
+  attests about commands derived from the mutant catalog, which the cache key deliberately does not
+  cover, so it is never cached.`
+
+A resumed run's `RESUMED` banner names the same three states, so the two banners can never
+contradict each other.
 
 **Location:** `.mutation/gates/<key>.json`, beside `.mutation/journal/` and `.mutation/results/` and
 with the same lifetime — one review loop, gitignored, dies with the worktree. Written atomically
@@ -524,8 +608,10 @@ not a cure for one. Three causes:
 - **`.mutation/` itself, the catalog included** — gitignored, so `git status` never reports it. Required
   for correctness (the cache writing its own entry must not invalidate its own key), and right on the
   merits: the baseline-scope canary proves that *`baselineCommand` observes a deliberate break in a
-  file it exercises*, a property of the command and not of the mutants. **Consequence:** rewriting an
-  `IMPRECISE` mutant and re-running costs no gates.
+  file it exercises*, a property of the command and not of the mutants. That rationale holds for
+  exactly the records that are cached, and only because a narrow-scope canary — which *is* a property
+  of the catalog — is never one of them. **Consequence:** rewriting an `IMPRECISE` mutant and
+  re-running costs no gates (the baseline half; its canary is re-measured either way).
 - **Gitignored state the suite reads** — `node_modules/`, a `.env`, a local database, a build cache;
   environment variables likewise. Not git-visible and not cheaply hashable. **This is the one real
   exposure**, and `--remeasure-gates` is the correction path. It is bounded in practice by the entry
@@ -549,8 +635,13 @@ consequences of writing only at the end: a run killed mid-mutation writes **noth
 gates next time — the correct trade), and a tree carrying crash residue can never be served a clean
 gate, because the digest is over worktree bytes.
 
+The entry's `schemaVersion` is **2**: it identifies the entry SHAPE, which gained a nullable
+`gates.canary`, where `harnessFingerprint` identifies the harness. Conflating the two is how one of
+them silently stops being maintained.
+
 A malformed **or unreadable** entry — bad JSON, an `EACCES` on the file, wrong `schemaVersion`, a
-`key` that disagrees with its filename, either gate record missing — is a **logged miss** on stderr,
+`key` that disagrees with its filename, the baseline record missing, or the `canary` **key** absent
+(as against present-and-null, which is legal) — is a **logged miss** on stderr,
 not a throw: the gates are re-measured and the entry overwritten. A crafted entry can therefore never
 deny a run. `keyInputs` is recorded inside the entry so an operator can diff two entries and
 see why one missed; it is never read back as an authority, because the filename is the key.

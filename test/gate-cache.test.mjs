@@ -30,8 +30,10 @@ import { loadAdapter } from '../lib/adapters/index.mjs';
 import { loadConfig } from '../lib/config.mjs';
 import { execute } from '../lib/runner.mjs';
 import { gateCacheKey, harnessFingerprint, treeDigest } from '../lib/gate-cache.mjs';
+import { formatReport } from '../lib/report.mjs';
 import { git, guardFiles, makeRepo, write } from './helpers/tmp-repo.mjs';
 import { childEnv, RUNNER, runCli } from './helpers/cli.mjs';
+import { makeCounter } from './helpers/command-counter.mjs';
 import { costConfig, costFiles, costMutants } from './helpers/cost-project.mjs';
 import { waitFor } from './helpers/wait.mjs';
 
@@ -83,23 +85,6 @@ function readGateEntryFile(repo, file) {
 function journalEntries(repo) {
   const dir = path.join(repo.root, '.mutation', 'journal');
   return existsSync(dir) ? readdirSync(dir) : [];
-}
-
-// A counter scoped to ONE invocation: each call truncates the log, so a claim
-// reads the commands that run 2 issued and not run 1's as well.
-function makeCounter() {
-  const scratch = mkdtempSync(path.join(os.tmpdir(), 'code-mutant-count-'));
-  const file = path.join(scratch, 'commands.jsonl');
-  return {
-    env: { CM_COUNT_LOG: file },
-    reset() { writeFileSync(file, ''); },
-    entries() {
-      if (!existsSync(file)) return [];
-      return readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
-    },
-    wholeSuite() { return this.entries().filter((e) => e.args.length === 0).length; },
-    cleanup() { rmSync(scratch, { recursive: true, force: true }); },
-  };
 }
 
 async function runJson(repo, args, env = {}) {
@@ -223,23 +208,28 @@ describe('gate cache key', () => {
 
 describe('gate cache', () => {
   test('G1: a second identical run serves both gates and measures neither', async () => {
+    // `baseline`, not `run`: a run whose mutants NARROW establishes its canary
+    // against each judging command, and that half is never cached (N12 pins
+    // exactly that, and that the baseline half's saving survives it). Both-served
+    // is the property this claim is about, so it is made on the invocation where
+    // both records are cacheable.
     const counter = makeCounter();
     const repo = makeRepo({ files: guardFiles(), config: countingConfig(), label: 'gc-hit' });
     try {
-      writeCatalog(repo, [MUTANT]);
-
-      const first = await runJson(repo, ['run', '--all', '--json'], counter.env);
+      const first = await runJson(repo, ['baseline', '--json'], counter.env);
       assert.equal(first.exitCode, 0, first.stderr);
       assert.equal(first.report.gateCache.status, 'miss');
       assert.equal(first.report.gates.baseline.fromCache, false);
       assert.ok(counter.wholeSuite() >= 1, 'the control: run 1 really did run the whole suite');
 
       counter.reset();
-      const second = await runJson(repo, ['run', '--all', '--json'], counter.env);
+      const second = await runJson(repo, ['baseline', '--json'], counter.env);
       assert.equal(second.exitCode, 0, second.stderr);
       assert.equal(second.report.gateCache.status, 'hit');
       assert.equal(second.report.gates.baseline.fromCache, true);
       assert.equal(second.report.gates.canary.fromCache, true);
+      assert.equal(second.report.gateCache.canaryServed, true);
+      assert.equal(second.report.gates.canary.scope, 'baseline');
       // THE DISCRIMINATOR: not "it was faster", but "the expensive command was
       // never issued". A cache that served a record while still measuring would
       // pass every field assertion above and fail this one.
@@ -252,6 +242,126 @@ describe('gate cache', () => {
       // served record, so `gatesMs` is the sum of two zeroes.
       assert.equal(second.report.timings.gatesMs, 0);
       assert.ok(first.report.timings.gatesMs > 0, 'the control: run 1 paid a real gate cost');
+    } finally { repo.cleanup(); counter.cleanup(); }
+  });
+
+  test('N12: a narrowing run caches the baseline and NEVER the canary', async () => {
+    // THE INVARIANT, and the reason it is not a weakening: a narrow-scope canary
+    // attests about commands DERIVED FROM THE CATALOG, which the key deliberately
+    // does not cover -- two different catalogs against one tree hash to the same
+    // key. So the catalog-independent half stays cached (the whole saving) and the
+    // canary half is measured every invocation.
+    const counter = makeCounter();
+    const repo = makeRepo({ files: guardFiles(), config: countingConfig(), label: 'gc-narrow-canary' });
+    try {
+      writeCatalog(repo, [MUTANT]);
+
+      const first = await runJson(repo, ['run', '--all', '--json'], counter.env);
+      assert.equal(first.exitCode, 0, first.stderr);
+      assert.equal(first.report.gates.canary.scope, 'narrow');
+      const [file] = gateEntries(repo);
+      const entry = readGateEntryFile(repo, file);
+      assert.equal(entry.gates.canary, null, 'the canary half must be written as null, not omitted');
+      assert.ok(entry.gates.baseline, 'the baseline half is still cached');
+      assert.equal(entry.gates.baseline.outcome, 'passed');
+
+      counter.reset();
+      const second = await runJson(repo, ['run', '--all', '--json'], counter.env);
+      assert.equal(second.exitCode, 0, second.stderr);
+      assert.equal(second.report.gateCache.status, 'hit');
+      // THE PRECEDING CARD'S SAVING SURVIVES: the whole suite is never issued.
+      assert.equal(second.report.gates.baseline.fromCache, true);
+      assert.equal(
+        counter.wholeSuite(),
+        0,
+        `run 2 issued ${counter.wholeSuite()} whole-suite command(s): ${JSON.stringify(counter.entries())}`,
+      );
+      // AND THE CANARY WAS REALLY RE-MEASURED, not silently skipped -- the
+      // assertion that fails if someone "optimises" by serving a null canary as a
+      // pass. Three narrow commands: the narrow baseline, the canary, the mutant.
+      assert.equal(second.report.gates.canary.fromCache, false);
+      assert.equal(second.report.gates.canary.scope, 'narrow');
+      assert.equal(second.report.gateCache.canaryServed, false);
+      const narrow = counter.entries().filter((e) => e.args.length > 0);
+      assert.equal(narrow.length, 3, `expected narrow baseline + canary + mutant: ${JSON.stringify(narrow)}`);
+      assert.ok(
+        narrow.every((e) => e.args.join(' ').includes('test/guard.test.mjs')),
+        JSON.stringify(narrow),
+      );
+
+      const text = formatReport(second.report);
+      assert.match(text, /BASELINE FROM CACHE/);
+      assert.doesNotMatch(text, /GATES FROM CACHE/, 'only one of the two gates was served');
+    } finally { repo.cleanup(); counter.cleanup(); }
+  });
+
+  test('N14: a cached BASELINE-scope canary is never served to a run that narrows', async () => {
+    // THE SEQUENCE THAT PLANTS THE POISON, and the one N12 (run->run) and N13
+    // (baseline->baseline) cannot reach: `baseline` legitimately caches a
+    // baseline-scope canary, and a later `run` on the identical tree is judged by
+    // a command that record says nothing about. Served, it reinstates through the
+    // cache door exactly the proxy this gate exists to remove -- a `SURVIVED`
+    // published beside a canary reading `passed` for a different command.
+    //
+    // "Never cached" has to hold on the SERVE side as well as the write side.
+    const counter = makeCounter();
+    const repo = makeRepo({ files: guardFiles(), config: countingConfig(), label: 'gc-baseline-then-run' });
+    try {
+      writeCatalog(repo, [MUTANT]);
+
+      const seeded = await runJson(repo, ['baseline', '--json'], counter.env);
+      assert.equal(seeded.exitCode, 0, seeded.stderr);
+      assert.equal(seeded.report.gates.canary.scope, 'baseline');
+      const [file] = gateEntries(repo);
+      assert.ok(
+        readGateEntryFile(repo, file).gates.canary,
+        'the entry must really carry a canary, or there is nothing to be tempted by',
+      );
+
+      counter.reset();
+      const run = await runJson(repo, ['run', '--all', '--json'], counter.env);
+      assert.equal(run.exitCode, 0, run.stderr);
+
+      // THE INVARIANT, both halves. The baseline stays served -- the preceding
+      // card's saving must survive this fix -- and only the canary re-measures.
+      assert.equal(run.report.gateCache.status, 'hit');
+      assert.equal(run.report.gates.baseline.fromCache, true);
+      assert.equal(
+        counter.wholeSuite(),
+        0,
+        `the baseline was served and no canary ran the whole suite: ${JSON.stringify(counter.entries())}`,
+      );
+
+      assert.equal(run.report.gates.canary.scope, 'narrow', 'the judging command is what must be attested');
+      assert.equal(run.report.gates.canary.fromCache, false);
+      assert.equal(run.report.gateCache.canaryServed, false);
+      assert.equal(run.report.gates.canary.scopes[0].command, run.report.results[0].narrowing.command);
+      // And it really ran: narrow baseline + canary + mutant.
+      const narrow = counter.entries().filter((e) => e.args.length > 0);
+      assert.equal(narrow.length, 3, `expected narrow baseline + canary + mutant: ${JSON.stringify(narrow)}`);
+    } finally { repo.cleanup(); counter.cleanup(); }
+  });
+
+  test('N13: a `baseline` run caches and serves BOTH, canary included', async () => {
+    // The contrast that makes N12 a statement about scope rather than about the
+    // cache being broken: with no mutants there is no judging command, the canary
+    // is baseline-scope, and baseline-scope canaries ARE cacheable.
+    const counter = makeCounter();
+    const repo = makeRepo({ files: guardFiles(), config: countingConfig(), label: 'gc-baseline-canary' });
+    try {
+      const first = await runJson(repo, ['baseline', '--json'], counter.env);
+      assert.equal(first.exitCode, 0, first.stderr);
+      const [file] = gateEntries(repo);
+      const entry = readGateEntryFile(repo, file);
+      assert.ok(entry.gates.canary, 'a baseline-scope canary is written');
+      assert.equal(entry.gates.canary.scope, 'baseline');
+
+      counter.reset();
+      const second = await runJson(repo, ['baseline', '--json'], counter.env);
+      assert.equal(second.report.gates.canary.fromCache, true);
+      assert.equal(second.report.gateCache.canaryServed, true);
+      assert.equal(counter.wholeSuite(), 0, JSON.stringify(counter.entries()));
+      assert.match(formatReport(second.report), /GATES FROM CACHE/);
     } finally { repo.cleanup(); counter.cleanup(); }
   });
 
@@ -678,12 +788,18 @@ describe('gate cache', () => {
       const resumed = await runCli(['run', '--all', '--resume'], { cwd: repo.root, timeoutMs: 300_000 });
       assert.equal(resumed.exitCode, 0, resumed.stderr);
       assert.match(resumed.stdout, /RESUMED --/);
-      assert.match(resumed.stdout, /GATES FROM CACHE/);
+      // A fully resumed run has no judging command left to attest, so its canary
+      // is baseline-scope and measured HERE while the baseline is served -- which
+      // is why the banner is the baseline-only form. The property is unchanged:
+      // whatever the two banners say, they may not contradict each other.
+      assert.match(resumed.stdout, /BASELINE FROM CACHE/);
+      assert.doesNotMatch(resumed.stdout, /GATES FROM CACHE/, 'only the baseline was served');
       assert.doesNotMatch(
         resumed.stdout,
         /Every gate above ran in full/,
         'the two banners must not contradict each other',
       );
+      assert.match(resumed.stdout, /The baseline above was served from the gate cache/);
     } finally { repo.cleanup(); }
   });
 
