@@ -229,10 +229,14 @@ TRUST GATES
   canary             Synthesised per run, never committed. Run against each
                      command that JUDGES a mutant (its narrowed scope), once per
                      distinct scope, and against baselineCommand for anything
-                     that cannot be soundly narrowed -- names narrowing, a
-                     per-mutant narrowCommand, exit-code grade, an adapter whose
-                     refs do not name files, a testCommand with no {tests}, and
-                     'baseline'/an empty catalog/a fully resumed run. A scope
+                     that cannot be soundly narrowed -- all six conditions:
+                     names narrowing, a per-mutant narrowCommand, exit-code
+                     grade, an adapter whose refs do not name files (dotnet, or
+                     a custom parser with its own scopeOf), a testCommand with
+                     no {tests}, a narrow command identical to baselineCommand
+                     (--learn's no-refs fallback included), and a ref naming a
+                     file this tree does not have. Plus 'baseline'/an empty
+                     catalog/a fully resumed run, which judge nothing. A scope
                      that cannot be shown to observe a failure ERRORs its OWN
                      mutants (canary-not-established) and the gate reads PARTIAL;
                      a run that attested nothing at all still fails wholesale.

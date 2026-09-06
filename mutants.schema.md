@@ -144,7 +144,7 @@ harness that is correct and that a narrow canary would wrongly fail, so the rule
 | `narrowing.mode === "file"` | `"names"` prepends a name filter that **excludes the injected canary's synthesised label by construction**; `"command"` (a per-mutant `narrowCommand`) and `"whole"` name no file the gate could prove is in scope. |
 | adapter `refsNameFiles === true` | The adapter's own declaration that `scopeOf(ref)` yields a repo file path (`dotnet` returns a declaring type; a custom parser overriding `scopeOf` defaults to `false`). Keyed on the declared interface, never on whether a path happens to exist. |
 | `narrowing.placeholder === true` | `{tests}` was actually substituted, which is what makes "the command names its scope files" true. A `testCommand` without the placeholder runs the same thing for every mutant. |
-| `narrowing.command !== baselineCommand` | The learn-mode no-refs fallback resolves to the whole suite — that *is* the baseline scope. |
+| `narrowing.command !== baselineCommand` | The two commands resolving to one string means there is no second command to attest — a `baselineCommand` already scoped to this mutant's file, or the learn-mode no-refs fallback (which is also `mode: "whole"`). |
 | ≥1 file in `narrowing.scopes` exists | A ref naming a file this tree does not have. |
 
 **A scope whose narrow baseline is not green is skipped**, not attested (`scopes[].skipped:
@@ -532,12 +532,22 @@ floor is now one full run plus one narrow run per resolved scope ([The canary's
 scope](#the-canarys-scope)). The baseline half does not depend on which mutants are in the run, so
 it is persisted and reused against a tree that has not changed.
 
-**NARROW-SCOPE CANARIES ARE NEVER CACHED, BY DESIGN.** `gates.canary` is written to the entry only
-when the canary ran at `scope: "baseline"`; otherwise the entry records `canary: null` — present, so
-a reader can tell it from an entry written before the field existed, and legal, so it is served as
-"the baseline is yours, measure the canary here". This is what keeps the key's own rationale for
-excluding the catalog (below) true **verbatim**: a narrow canary is derived from the catalog, and
-two different catalogs against one tree hash to the same key.
+**NARROW-SCOPE CANARIES ARE NEVER CACHED, BY DESIGN — on the serve side as well as the write side.**
+
+- *Write:* `gates.canary` is written to the entry only when the canary ran at `scope: "baseline"`;
+  otherwise the entry records `canary: null` — present, so a reader can tell it from an entry written
+  before the field existed, and legal, so it is served as "the baseline is yours, measure the canary
+  here".
+- *Serve:* a cached canary is served **only when no pending mutant needs narrow attestation**
+  (`needsNarrowCanary`, the same predicate the gate partitions on). `mutate.mjs baseline` files a
+  perfectly legitimate baseline-scope canary against a tree; serving it to a later `run` on that same
+  tree would put the record's claim and the run's verdicts on two different commands — a `SURVIVED`
+  published beside a canary reading `passed` for a command no verdict came from. The baseline half is
+  still served in that case; only the canary half re-measures.
+
+This is what keeps the key's own rationale for excluding the catalog (below) true **verbatim**: a
+narrow canary is derived from the catalog, and two different catalogs against one tree hash to the
+same key.
 
 A hit is **not** "a gate that did not run". It is a measurement keyed on the tree it was made
 against; its outcome is served **verbatim** (`not-established` stays `not-established`, nothing is

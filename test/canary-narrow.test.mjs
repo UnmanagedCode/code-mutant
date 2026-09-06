@@ -26,6 +26,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadAdapter } from '../lib/adapters/index.mjs';
 import { loadConfig } from '../lib/config.mjs';
 import { Verdict } from '../lib/classify.mjs';
+import { narrowCanaryEligible } from '../lib/canary-gate.mjs';
 import { CanaryStatus, GateOutcome } from '../lib/gates.mjs';
 import { ExitCode, exitCodeFor, formatReport } from '../lib/report.mjs';
 import { execute } from '../lib/runner.mjs';
@@ -36,6 +37,7 @@ import { makeCounter } from './helpers/command-counter.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const COUNTING = path.join(HERE, 'helpers', 'counting-command.mjs');
 const STAGED = path.join(HERE, 'helpers', 'staged-command.mjs');
+const SLOW = path.join(HERE, 'helpers', 'slow-when-mutated.mjs');
 const NODE_TEST_MODULE = pathToFileURL(path.join(HERE, '..', 'lib', 'adapters', 'node-test.mjs')).href;
 const SCHEMA_DOC = path.join(HERE, '..', 'mutants.schema.md');
 
@@ -308,6 +310,159 @@ describe('AC2: everything that cannot be soundly narrowed falls back, unchanged'
       assert.equal(run.report.results[0].verdict, Verdict.KILLED, run.report.results[0].detail);
       assert.equal(run.report.gates.canary.scope, 'baseline');
       assert.equal(run.report.gates.canary.status, CanaryStatus.KILLED, run.report.gates.canary.detail);
+    } finally { repo.cleanup(); }
+  });
+});
+
+// THE DISCRIMINATION PROOF, without touching production code: the fixture's own
+// narrowing is ineligible, and the SAME object with one field changed is
+// eligible. That isolates the conjunct under test from the other five -- an
+// integration assertion alone cannot say WHICH of them refused.
+function eligibility(report, config, adapter = { grade: 'counted', refsNameFiles: true }, index = 0) {
+  const narrowing = report.results[index].narrowing;
+  return {
+    narrowing,
+    of(overrides = {}) {
+      return narrowCanaryEligible({
+        narrowing: { ...narrowing, ...overrides },
+        adapter,
+        config,
+        workspaceRoot: report.workspaceRoot,
+      });
+    },
+  };
+}
+
+describe('AC2 (continued): the conjuncts that no fixture reaches by accident', () => {
+  test('N15: a testCommand with no `{tests}` falls back -- it does not name the scope it judges', async () => {
+    // The command that judges this mutant takes NO arguments: it reads the site
+    // file and reports a failure when the mutation is present (the shape
+    // test/hang-deadline.test.mjs 3B measures). The harness is entirely correct --
+    // the mutant grades KILLED below -- and a narrow canary would inject into
+    // test/guard.test.mjs, run a command that never looks at it, see no failure,
+    // and refuse the run. `placeholder` is what makes "the command names its scope
+    // files" a fact rather than an assumption.
+    const scratch = mkdtempSync(path.join(os.tmpdir(), 'code-mutant-noplaceholder-'));
+    const repo = makeRepo({
+      files: guardFiles(),
+      config: {
+        baselineCommand: 'node --test',
+        testCommand: `node ${JSON.stringify(SLOW)}`,
+        runner: 'node-test',
+        isolation: 'in-place',
+      },
+      label: 'cn-no-placeholder',
+    });
+    try {
+      const report = await runInProcess(repo, [GUARD_MUTANT], {
+        CM_SLOW_FILE: 'src/guard.mjs',
+        CM_SLOW_NEEDLE: 'return false;',
+        CM_SLOW_ITERATIONS: '0',
+        CM_SLOW_FAIL_TEST: 'test/guard.test.mjs::allows user-defined backends',
+        CM_FAKE_STATE: path.join(scratch, 'unused'),
+      });
+
+      assert.equal(report.results[0].verdict, Verdict.KILLED, report.results[0].detail);
+      assert.equal(report.results[0].narrowing.mode, 'file', 'every other conjunct is satisfied');
+      assert.equal(report.results[0].narrowing.placeholder, false);
+      assert.deepEqual(report.results[0].narrowing.scopes, ['test/guard.test.mjs']);
+      assert.equal(report.gates.canary.scope, 'baseline');
+      assert.equal(report.gates.canary.status, CanaryStatus.KILLED, report.gates.canary.detail);
+
+      const config = loadConfig({ repoRoot: repo.root });
+      const check = eligibility(report, config);
+      assert.equal(check.of(), false, 'ineligible as it stands');
+      assert.equal(check.of({ placeholder: true }), true, 'and the placeholder is the ONLY reason');
+    } finally { repo.cleanup(); rmSync(scratch, { recursive: true, force: true }); }
+  });
+
+  test('N16: a narrow command identical to baselineCommand falls back -- it IS the baseline scope', async () => {
+    // (a) A baselineCommand already scoped to the file this mutant narrows to.
+    // There is no second command to attest: reporting a narrow scope would claim
+    // two gates over one command and double-count its cost.
+    const repo = makeRepo({
+      files: twoScopeFiles(),
+      // Both commands resolve to the same string once `{tests}` is substituted.
+      config: {
+        baselineCommand: "node --test 'test/guard.test.mjs'",
+        testCommand: 'node --test {tests}',
+        runner: 'node-test',
+        isolation: 'in-place',
+      },
+      label: 'cn-same-command',
+    });
+    try {
+      const report = await runInProcess(repo, [GUARD_MUTANT]);
+      assert.equal(
+        report.results[0].narrowing.command,
+        report.gates.baseline.command,
+        'the fixture must really resolve the two commands to one string',
+      );
+      assert.equal(report.results[0].narrowing.mode, 'file', 'every other conjunct is satisfied');
+      assert.equal(report.results[0].narrowing.placeholder, true);
+      assert.equal(report.gates.canary.scope, 'baseline');
+      assert.equal(report.gates.canary.status, CanaryStatus.KILLED, report.gates.canary.detail);
+
+      const config = loadConfig({ repoRoot: repo.root });
+      const check = eligibility(report, config);
+      assert.equal(check.of(), false, 'ineligible as it stands');
+      assert.equal(
+        check.of({ command: `${report.gates.baseline.command} --test-concurrency=1` }),
+        true,
+        'and being the baseline command is the ONLY reason',
+      );
+    } finally { repo.cleanup(); }
+  });
+
+  test('N16b: --learn with a mutant that names no ref falls back to the whole suite', async () => {
+    // The documented no-refs fallback resolves to baselineCommand, which is the
+    // same scope by a second route (`mode: "whole"`). Both conjuncts refuse it, and
+    // a rule keyed on either alone still lands here -- which is the point: the
+    // fallback must never be attested as though it were a narrowed command.
+    const repo = makeRepo({ files: twoScopeFiles(), config: countingConfig(), label: 'cn-learn-fallback' });
+    try {
+      const config = loadConfig({ repoRoot: repo.root });
+      const adapter = await loadAdapter(config.runner, { configDir: config.configDir });
+      const report = await execute({
+        config,
+        adapter,
+        learn: true,
+        mutants: [{ ...GUARD_MUTANT, expectFail: [], expectPass: [] }],
+      });
+
+      assert.equal(report.results[0].narrowing.mode, 'whole');
+      assert.equal(report.results[0].narrowing.command, report.gates.baseline.command);
+      assert.equal(report.gates.canary.scope, 'baseline');
+      assert.equal(report.gates.canary.status, CanaryStatus.KILLED, report.gates.canary.detail);
+    } finally { repo.cleanup(); }
+  });
+
+  test('N17: a ref naming a file this tree does not have falls back', async () => {
+    // The mutant is judged by a command over a file that is not there, so its own
+    // scope ERRORs -- but the GATE must still be established, at baseline scope,
+    // rather than trying to inject into a path nothing can read.
+    const repo = makeRepo({ files: twoScopeFiles(), config: countingConfig(), label: 'cn-ghost-ref' });
+    try {
+      const report = await runInProcess(repo, [{
+        ...GUARD_MUTANT,
+        expectFail: ['test/ghost.test.mjs::a test in a file that is not here'],
+      }]);
+
+      assert.equal(report.results[0].narrowing.mode, 'file', 'every other conjunct is satisfied');
+      assert.deepEqual(report.results[0].narrowing.scopes, ['test/ghost.test.mjs']);
+      assert.equal(report.results[0].verdict, Verdict.ERROR, report.results[0].detail);
+      assert.equal(report.gates.canary.scope, 'baseline');
+      assert.equal(report.gates.canary.status, CanaryStatus.KILLED, report.gates.canary.detail);
+      assert.equal(report.gates.canary.target, 'test/guard.test.mjs');
+
+      const config = loadConfig({ repoRoot: repo.root });
+      const check = eligibility(report, config);
+      assert.equal(check.of(), false, 'ineligible as it stands');
+      assert.equal(
+        check.of({ scopes: ['test/guard.test.mjs'] }),
+        true,
+        'and the missing file is the ONLY reason',
+      );
     } finally { repo.cleanup(); }
   });
 });

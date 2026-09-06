@@ -51,8 +51,12 @@ Build a project-local mutation-testing harness at `harness/mutation/`, driven by
    the canary gate is established against each command that *judges* a mutant — the narrowed
    `testCommand`, which names its own scope files — so `baselineCommand`'s scope does not come into
    it for a catalog whose mutants all narrow. It does for everything else: `baseline`, an empty
-   catalog, and any mutant the gate cannot narrow (`narrowTo: "names"`, a per-mutant
-   `narrowCommand`, `exit-code` grade, a `testCommand` with no `{tests}`). There the gate injects a
+   catalog, and any mutant the gate cannot narrow. That last set is six conditions, enumerated in
+   full under "The canary's scope" in `code-mutant`'s `mutants.schema.md` — `narrowTo: "names"`, a
+   per-mutant `narrowCommand`, `exit-code` grade, **an adapter whose refs do not name files (every
+   `dotnet` project, and any `custom` parser exporting its own `scopeOf`)**, a `testCommand` with no
+   `{tests}`, a narrow command that resolves to `baselineCommand` (including `--learn`'s no-refs
+   fallback), and a ref naming a file the tree does not have. There the gate injects a
    guaranteed-failing test into a candidate file, in this order: the target a previous run
    journalled, then the scopes this run's own mutants narrow to, then tracked files matching the
    adapter's `testFilePatterns` in sorted order. If the first few candidates sit outside

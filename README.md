@@ -197,18 +197,24 @@ skipped one.
   always errors would report every mutant `KILLED` (a fake-clean sweep).
   **Which command it runs:** the one that actually judges the mutant — each distinct narrowed scope,
   once — because in counted mode no verdict comes from `baselineCommand`. It falls back to
-  `baselineCommand` for anything it cannot soundly narrow: `narrowTo: "names"` (the name filter
-  excludes the injected canary by construction), a per-mutant `narrowCommand`, exit-code grade, an
-  adapter whose refs do not name files, a `testCommand` with no `{tests}`, and `baseline`/an empty
-  catalog/a fully resumed run. A scope that *cannot* be shown to observe a failure `ERROR`s **its own
-  mutants** (`canary-not-established`, a `PARTIAL` gate) rather than failing the whole run — but a run
-  where nothing at all could be attested is still the wholesale refusal it always was.
+  `baselineCommand` for anything it cannot soundly narrow, and the six conditions are enumerated in
+  full in [`mutants.schema.md`](mutants.schema.md#the-canarys-scope): `narrowTo: "names"` (the name
+  filter excludes the injected canary by construction), a per-mutant `narrowCommand`, exit-code
+  grade, an adapter whose refs do not name files (`dotnet`, or a `custom` parser with its own
+  `scopeOf`), a `testCommand` with no `{tests}`, a narrow command identical to `baselineCommand`
+  (including `--learn`'s no-refs fallback), and a ref naming a file this tree does not have — plus
+  `baseline`/an empty catalog/a fully resumed run, which have no judging command at all. A scope that
+  *cannot* be shown to observe a failure `ERROR`s **its own mutants** (`canary-not-established`, a
+  `PARTIAL` gate) rather than failing the whole run — but a run where nothing at all could be attested
+  is still the wholesale refusal it always was.
 
 Each gate reports `passed`, `failed`, or **`not-established`** — a gate that could not run at all,
 which must never be read as a pass. It does not fail the exit code, so exit 0 on its own does not
 mean the gates held: an `exit-code`-grade harness always reports its canary that way at baseline
 scope, and so does empty-diff-vs-base when no `baseBranch` is configured or it names the branch
-`HEAD` is already on.
+`HEAD` is already on. The canary has a fourth: **`partial`** — some judging command was attested and
+some was not, so the mutants judged by an unattested one are `ERROR`, not findings. It does not fail
+the exit code either; those mutants drive it to 5 through `noVerdict`.
 
 `--allow-dirty` overrides the dirty-tree refusal and nothing else. Every verdict from that
 invocation is then labelled non-reproducible — a `repro` column reading `NO (dirty)` in the matrix,

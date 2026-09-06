@@ -295,6 +295,53 @@ describe('gate cache', () => {
     } finally { repo.cleanup(); counter.cleanup(); }
   });
 
+  test('N14: a cached BASELINE-scope canary is never served to a run that narrows', async () => {
+    // THE SEQUENCE THAT PLANTS THE POISON, and the one N12 (run->run) and N13
+    // (baseline->baseline) cannot reach: `baseline` legitimately caches a
+    // baseline-scope canary, and a later `run` on the identical tree is judged by
+    // a command that record says nothing about. Served, it reinstates through the
+    // cache door exactly the proxy this gate exists to remove -- a `SURVIVED`
+    // published beside a canary reading `passed` for a different command.
+    //
+    // "Never cached" has to hold on the SERVE side as well as the write side.
+    const counter = makeCounter();
+    const repo = makeRepo({ files: guardFiles(), config: countingConfig(), label: 'gc-baseline-then-run' });
+    try {
+      writeCatalog(repo, [MUTANT]);
+
+      const seeded = await runJson(repo, ['baseline', '--json'], counter.env);
+      assert.equal(seeded.exitCode, 0, seeded.stderr);
+      assert.equal(seeded.report.gates.canary.scope, 'baseline');
+      const [file] = gateEntries(repo);
+      assert.ok(
+        readGateEntryFile(repo, file).gates.canary,
+        'the entry must really carry a canary, or there is nothing to be tempted by',
+      );
+
+      counter.reset();
+      const run = await runJson(repo, ['run', '--all', '--json'], counter.env);
+      assert.equal(run.exitCode, 0, run.stderr);
+
+      // THE INVARIANT, both halves. The baseline stays served -- the preceding
+      // card's saving must survive this fix -- and only the canary re-measures.
+      assert.equal(run.report.gateCache.status, 'hit');
+      assert.equal(run.report.gates.baseline.fromCache, true);
+      assert.equal(
+        counter.wholeSuite(),
+        0,
+        `the baseline was served and no canary ran the whole suite: ${JSON.stringify(counter.entries())}`,
+      );
+
+      assert.equal(run.report.gates.canary.scope, 'narrow', 'the judging command is what must be attested');
+      assert.equal(run.report.gates.canary.fromCache, false);
+      assert.equal(run.report.gateCache.canaryServed, false);
+      assert.equal(run.report.gates.canary.scopes[0].command, run.report.results[0].narrowing.command);
+      // And it really ran: narrow baseline + canary + mutant.
+      const narrow = counter.entries().filter((e) => e.args.length > 0);
+      assert.equal(narrow.length, 3, `expected narrow baseline + canary + mutant: ${JSON.stringify(narrow)}`);
+    } finally { repo.cleanup(); counter.cleanup(); }
+  });
+
   test('N13: a `baseline` run caches and serves BOTH, canary included', async () => {
     // The contrast that makes N12 a statement about scope rather than about the
     // cache being broken: with no mutants there is no judging command, the canary
