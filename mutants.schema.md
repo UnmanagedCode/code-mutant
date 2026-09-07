@@ -554,11 +554,13 @@ a refusal, never a gate, no effect on the exit code.
 
 ## Caching the gates
 
-The gates are a **fixed cost paid once per invocation**, independent of mutant count. Measured on
-code-conductor (`npm test` ≈ 67 s, 35-mutant catalog) **before the canary was narrowed**, when the
-floor was two full `baselineCommand` runs: ~135,000 ms, **98.6% of a single-mutant invocation**. The
-floor is now one full run plus one narrow run per resolved scope ([The canary's
-scope](#the-canarys-scope)). The baseline half does not depend on which mutants are in the run, so
+The **baseline** gate is a **fixed cost paid once per invocation**, independent of mutant count.
+Measured on code-conductor (`npm test` ≈ 67 s, 35-mutant catalog) **before the canary was narrowed**,
+when the floor was two full `baselineCommand` runs and the whole gate cost was therefore fixed:
+~135,000 ms, **98.6% of a single-mutant invocation**. The floor is now one full run plus one narrow
+run per resolved scope ([The canary's scope](#the-canarys-scope)), and only the full run is fixed —
+a narrow canary scales with the mutants in the run, which is why
+[`timings.gatesMs`](#where-a-runs-wall-time-went) is not all fixed cost. The baseline half does not depend on which mutants are in the run, so
 it is persisted and reused against a tree that has not changed.
 
 **NARROW-SCOPE CANARIES ARE NEVER CACHED, BY DESIGN — on the serve side as well as the write side.**

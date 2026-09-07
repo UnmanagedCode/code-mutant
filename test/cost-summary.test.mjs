@@ -26,6 +26,14 @@ import { runCli } from './helpers/cli.mjs';
 // THE TWO RUNS THE PREDICATE MUST SEPARATE, from the epic plan's field data
 // (prover session f99553e4, 35-mutant catalog, `npm test` ~67s). Same gates, same
 // catalog, same project -- the ONLY difference is how many mutants rode along.
+//
+// BOTH ARE THE PRE-NARROWING SHAPE (before card 2026-0048), where the gates were
+// two whole-suite runs and so ALL of gatesMs was fixed. That is what makes the
+// ratios below equal gatesMs/measured. A post-narrowing batched run would resolve
+// its canary to `narrow` scope, leaving only the baseline fixed -- see README
+// "Where a run's wall time went" for that arithmetic. These fixtures deliberately
+// keep the pre-narrowing shape, because it is the shape actually measured and
+// because baseReport() gives them a baseline-scope canary to match.
 const FIELD_GATES_MS = 135_100;
 const FIELD_NARROW_MS = 1_000;
 
@@ -39,7 +47,8 @@ const PER_MUTANT_INVOCATION = {
 };
 
 // All 35 in one invocation: 135_100 / (1_000 + 40_250) = 3.3x. Already optimal --
-// the gates are still 75.7% of the run and there is NOTHING left to do about it.
+// the gates are still 75.7% of THIS FIXTURE's run and there is nothing left to do
+// about it, which is the property C8 uses.
 const BATCHED_INVOCATION = {
   timings: {
     totalMs: 178_350, gatesMs: FIELD_GATES_MS, narrowBaselinesMs: FIELD_NARROW_MS, mutantsMs: 40_250,
@@ -101,8 +110,9 @@ function measuredGates(extra = {}) {
       measuredDurationMs: null,
     },
     // BASELINE scope, as in the field data: the epic's 135 100 ms is two WHOLE-SUITE
-    // runs (baseline 67.5s + canary 67.6s). A canary's scope is what decides whether
-    // its cost is fixed per invocation or scales with the mutants in the run, so a
+    // runs (baseline 67.5s + canary 67.6s), which is what the gates cost before card
+    // 2026-0048 narrowed the canary. A canary's scope is what decides whether its
+    // cost is fixed per invocation or scales with the mutants in the run, so a
     // fixture that gets it wrong cannot exercise the predicate honestly.
     canary: {
       outcome: GateOutcome.PASSED,
@@ -158,7 +168,8 @@ function narrowCanary(durationMs = 67_600) {
 // cannot produce, and can pass or fail for reasons no real run would.
 //
 // Split as two whole-suite runs (baseline + baseline-scope canary), which is the
-// field data's own shape and makes the whole of gatesMs fixed per invocation.
+// field data's own pre-2026-0048 shape and makes the whole of gatesMs fixed per
+// invocation. Tests that need the post-narrowing shape pass their own `gates`.
 function baseReport(extra = {}) {
   const timings = extra.timings === undefined
     ? { totalMs: 100, gatesMs: 50, narrowBaselinesMs: 20, mutantsMs: 30 }
@@ -194,8 +205,8 @@ const NOTE = /FIXED COST DOMINATES/;
 describe('the printed cost breakdown', () => {
   test('C1: every bucket prints with its own share of totalMs', () => {
     // Criterion 1. The three numbers alone are what an operator has to be able to
-    // read WITHOUT --json; the share is what makes 135100 legible as "98.5% of
-    // this run" rather than a large number with no denominator.
+    // read WITHOUT --json; the share is what makes a number like 135100 legible as
+    // a fraction of its run rather than a large number with no denominator.
     const text = formatReport(baseReport({
       timings: { totalMs: 1_000, gatesMs: 500, narrowBaselinesMs: 250, mutantsMs: 200 },
     }));
@@ -238,6 +249,23 @@ describe('the printed cost breakdown', () => {
     assert.doesNotMatch(text, /undefined/);
     assert.match(text, /narrowBaselinesMs\s+\|\s+-\s+\|\s+-/);
     assert.match(text, /mutantsMs\s+\|\s+-\s+\|\s+-/);
+  });
+
+  test('C4b: an absent gatesMs is characterised not at all, rather than called fixed', () => {
+    // The one arm of the label branch with no fixture. `-` in the table is the
+    // renderer saying it does not know the number; a sentence underneath calling
+    // that unknown "FIXED per invocation" -- or announcing that no gate command
+    // ran -- would be a claim about a measurement it cannot read.
+    const text = formatReport(baseReport({
+      timings: { totalMs: 500, narrowBaselinesMs: 20, mutantsMs: 30 },
+      selection: { catalogTotal: 35, selected: 1 },
+    }));
+
+    assert.match(text, /gatesMs\s+\|\s+-\s+\|\s+-/);
+    assert.doesNotMatch(text, /FIXED per invocation/);
+    assert.doesNotMatch(text, /counts as fixed per invocation/);
+    assert.doesNotMatch(text, /No gate command ran here/);
+    assert.doesNotMatch(text, NOTE);
   });
 
   test('C5: a report with no timings prints no Cost block and does not throw', () => {
@@ -368,7 +396,7 @@ describe('the fixed-cost note fires on the pathological run and only on it', () 
     }));
 
     assert.match(text, /gatesMs covers the canary only/);
-    assert.match(text, /NONE of gatesMs is fixed per invocation/, 'and says why the note is absent');
+    assert.match(text, /NONE of gatesMs counts as fixed per invocation/, 'and says why the note is absent');
     assert.doesNotMatch(text, NOTE);
     // gate-cache.test.mjs N13 asserts this exact string is ABSENT on a half-hit;
     // the cost block must not be the thing that resurrects it.
@@ -529,7 +557,12 @@ describe('each conjunct and each guard is separately load-bearing', () => {
     }));
 
     assert.doesNotMatch(text, NOTE);
-    assert.match(text, /NONE of gatesMs is fixed per invocation/);
+    // And says only what it knows. This scope is unrecognised, so "it is all one
+    // narrow canary per scope" would be a guess about which non-fixed shape ran --
+    // the same wrong-but-plausible reasoning inside a diagnostic that card
+    // 2026-0052 was filed for.
+    assert.match(text, /NONE of gatesMs counts as fixed per invocation/);
+    assert.doesNotMatch(text, /it is all one narrow canary per scope/);
   });
 
   test('C19: the fixed share of gatesMs is named when it is only part of it', () => {
