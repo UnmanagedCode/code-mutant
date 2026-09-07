@@ -76,6 +76,10 @@ read `KILLED`, but it runs no tests, so it establishes no gate and does not stan
 
 ## 6. Run
 
+Run the whole catalog in **one** invocation (`run --all`, or every id in a single `run`), never one
+mutant per invocation: the trust gates are a fixed per-invocation cost, the same for 35 mutants as
+for 1, so N invocations pay them N times.
+
 Run narrow by default. A structural mutation with no anchor+replace form (e.g. reordering two
 migrations) uses the `patch` site form instead — that residue stays hand-authored, the runner
 doesn't invent structural edits for you, but `probe --patch-file` iterates one without a catalog

@@ -355,6 +355,11 @@ finding can be pointed at exactly the commit it was found against.
                                                            // measured one measuredDurationMs is null. Never absent.
   narrowBaselines: [ { command, green, counts, durationMs } ],   // one entry per DISTINCT narrow scope
   timings: { totalMs, gatesMs, narrowBaselinesMs, mutantsMs },
+  selection: { catalogTotal, selected },        // `run` ONLY -- absent on probe/baseline. How many catalog
+                                                // mutants this invocation carried, out of how many the
+                                                // catalog holds. The amortisation denominator: it is what
+                                                // decides whether the printed FIXED COST DOMINATES note has
+                                                // a remedy left to name
   resumed:   { journal, key, reused, ran } | null,   // non-null iff --resume was passed
   resumable: { key, available } | null,             // ADVISORY: a journal matches and --resume was NOT passed
   gateCache: { status: "hit"|"miss"|"bypassed",
@@ -408,10 +413,23 @@ Every measured command reports its own `durationMs`, and `timings` is **derived*
 sums nothing that is not also on the report, so the breakdown cannot drift from the numbers it
 sums.
 
+**The first place to look is the printed `Cost` block**, not this table — it renders these three
+buckets with each one's share of `totalMs` in the non-`--json` summary, and emits a
+`FIXED COST DOMINATES` note when the **fixed** part of `gatesMs` is `>= 10 ×` the measurement it
+bought *and* the catalog still holds mutants this invocation did not carry
+(`selection.selected < selection.catalogTotal`). It is silent when nothing was measured, when either
+measurement bucket is missing or their sum is 0, when the report carries no `selection`, and when the
+fixed part of `gatesMs` is 0 (fully cached, or only narrow-scope gate work ran — nothing batching
+could spread). The
+threshold lives in exactly one place, `FIXED_COST_DOMINANCE_RATIO` in `lib/report.mjs`; `--json`
+deliberately carries **no** derived ratio or flag, only the four raw buckets below. Rationale and the
+two runs the threshold separates:
+[README](README.md#where-a-runs-wall-time-went).
+
 | Field | Covers |
 |---|---|
 | `timings.totalMs` | The whole invocation, including a run that stopped at a failed gate. |
-| `timings.gatesMs` | `gates.baseline.durationMs + gates.canary.durationMs`. The **fixed** cost when the gates are measured — paid once per invocation regardless of mutant count. **0 when both were served from cache**, because no command ran; the original cost is at `gates.*.measuredDurationMs`. The cache's own lookup cost is `gateCache.lookupMs`, deliberately outside this sum. |
+| `timings.gatesMs` | `gates.baseline.durationMs + gates.canary.durationMs`. Mostly fixed cost — paid once per invocation regardless of mutant count — but **not entirely**: a canary at `scope: "narrow"` is one run per *distinct* scope, so that part scales with the mutants in the run (the printed `Cost` block names the fixed part when they differ). **0 when no gate command ran here**, which in practice means both were served from cache — the original cost is then at `gates.*.measuredDurationMs` — though a record can carry `durationMs: 0` without any cache involvement (the canary-prerequisite refusal runs nothing). The cache's own lookup cost is `gateCache.lookupMs`, deliberately outside this sum. |
 | `timings.narrowBaselinesMs` | Sum of `narrowBaselines[].durationMs` — one measured command per *distinct* scope, so N mutants at one scope cost one entry. |
 | `timings.mutantsMs` | Sum of `results[].durationMs`. A **sum of per-mutant wall clocks**, so under `jobs > 1` it legitimately exceeds `totalMs`. |
 | `results[].applyMs` / `measureMs` / `restoreMs` | The harness's own snapshot+apply and restore cost, versus the project's command. Disjoint slices of that result's `durationMs`; `null` for a phase that never ran (an `ERROR` that stopped before Phase B). The remainder, when there is one, is the per-mutant exit-code canary — its own cost is on `results[].canary.durationMs`. |
@@ -536,11 +554,13 @@ a refusal, never a gate, no effect on the exit code.
 
 ## Caching the gates
 
-The gates are a **fixed cost paid once per invocation**, independent of mutant count. Measured on
-code-conductor (`npm test` ≈ 67 s, 35-mutant catalog) **before the canary was narrowed**, when the
-floor was two full `baselineCommand` runs: ~135,000 ms, **98.6% of a single-mutant invocation**. The
-floor is now one full run plus one narrow run per resolved scope ([The canary's
-scope](#the-canarys-scope)). The baseline half does not depend on which mutants are in the run, so
+The **baseline** gate is a **fixed cost paid once per invocation**, independent of mutant count.
+Measured on code-conductor (`npm test` ≈ 67 s, 35-mutant catalog) **before the canary was narrowed**,
+when the floor was two full `baselineCommand` runs and the whole gate cost was therefore fixed:
+~135,000 ms, **98.6% of a single-mutant invocation**. The floor is now one full run plus one narrow
+run per resolved scope ([The canary's scope](#the-canarys-scope)), and only the full run is fixed —
+a narrow canary scales with the mutants in the run, which is why
+[`timings.gatesMs`](#where-a-runs-wall-time-went) is not all fixed cost. The baseline half does not depend on which mutants are in the run, so
 it is persisted and reused against a tree that has not changed.
 
 **NARROW-SCOPE CANARIES ARE NEVER CACHED, BY DESIGN — on the serve side as well as the write side.**

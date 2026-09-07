@@ -262,10 +262,12 @@ records' full shapes are in [`mutants.schema.md`](mutants.schema.md#the-clean-tr
 
 ### Gate caching
 
-The gates are a fixed cost paid once per invocation, independent of mutant count. Measured at
-~135,000 ms — **98.6% of a single-mutant invocation** on this workspace's own suite — *before the
-canary was narrowed*, when the floor was two full `baselineCommand` runs. It is now one full run plus
-one narrow run per resolved scope. The baseline record is cached at **`.mutation/gates/<key>.json`**
+The **baseline** gate is a fixed cost paid once per invocation, independent of mutant count — which
+is what makes it cacheable. Measured at ~135,000 ms — **98.6% of a single-mutant invocation** on this
+workspace's own suite — *before the canary was narrowed*, when the whole gate floor was two full
+`baselineCommand` runs and so was fixed end to end. It is now one full run plus one narrow run per
+resolved scope, and only the full run is fixed: a narrow canary is one run per scope, so it scales
+with the mutants in the run (see [Where a run's wall time went](#where-a-runs-wall-time-went)). The baseline record is cached at **`.mutation/gates/<key>.json`**
 and served on a repeat run against an unchanged tree; the canary record is cached **only when it ran
 at baseline scope**.
 
@@ -294,6 +296,70 @@ report carries a `GATES FROM CACHE` banner — or `BASELINE FROM CACHE`, when th
 here. An entry is written only by a run that proved it left no trace, so a run killed mid-mutation
 re-pays the gates rather than caching a tree it may have poisoned. Full contract — key inputs, write conditions, the crash-window ordering — is in
 [`mutants.schema.md`](mutants.schema.md#caching-the-gates).
+
+### Where a run's wall time went
+
+**Look at the printed `Cost` block first** — it sits under `Trust gates` in every `run`, `probe` and
+`baseline` summary, needs no `--json`, and prints on a failed-gate run too. Three buckets, each with
+its share of `totalMs`:
+
+| Bucket | What it is |
+|---|---|
+| `gatesMs` | Mostly, but **not always entirely, fixed per invocation** — the block names the fixed part when they differ. A canary at `scope: "baseline"` is a whole-suite run and is fixed; a `"narrow"` one is a run per *distinct* scope, so it scales with the mutants in the run and batching cannot spread it. `0` means **no gate command ran here** — in practice both were served from cache (see [Gate caching](#gate-caching)), though a gate record can also carry `durationMs: 0` with no cache involved. On a narrowing run against a cached baseline, `gatesMs` covers the canary only, since a narrow canary is never cached. |
+| `narrowBaselinesMs` | One measured command per *distinct* scope, so N mutants at one scope cost one entry. |
+| `mutantsMs` | A sum of per-mutant wall clocks, so under `--jobs N` it legitimately exceeds `totalMs` and prints above 100%. |
+
+A share renders `-` when `totalMs` is `0`, and a bucket renders `-` when it is absent — never `0.0%`
+for a measurement that never happened. Field-by-field contract:
+[`mutants.schema.md`](mutants.schema.md#where-a-runs-wall-time-went).
+
+**The `FIXED COST DOMINATES` note.** Emitted when the **fixed** part of `gatesMs` is `>= 10 ×` the
+measurement it bought (`narrowBaselinesMs + mutantsMs`) **and** the catalog still holds mutants this
+invocation did not carry. Both conjuncts are required, and the threshold is the constant
+`FIXED_COST_DOMINANCE_RATIO` in `lib/report.mjs` — its only home.
+
+The numerator is the fixed part rather than the whole bucket because that is the only cost more
+mutants per invocation can amortise. So a narrowing run whose baseline was served from cache is
+silent — what it re-paid was a narrow canary, which batching would *add* to, not spread — while a
+`run` that reached `scope: "baseline"` (nothing narrow-canary-eligible) really did re-pay a whole
+suite and still fires.
+
+It is also silent, before the ratio is taken at all, when: **nothing was measured** (a failed gate,
+or `baseline`, which carries no mutants); **either measurement bucket is not finite, or their sum is
+0**, so there is no denominator to divide by; the report carries **no `selection`** — `probe` and
+`baseline` set none, and absent is treated as unsatisfied rather than guessed; or **the fixed part of
+`gatesMs` is 0** — fully cached, or only narrow-scope gate work ran, so there is nothing batching
+could spread. A missed note costs nothing; a false one teaches the reader to skip the real one.
+
+Why a ratio against *measurement* rather than a share of `totalMs`: **the ratio responds to the
+remedy and the share does not.** Batching k mutants into one invocation divides the fixed cost per
+unit of measurement by k; the share of `totalMs` tracks the measurement mix instead, and stays high
+on a run that is already optimal. Note it is only the *fixed* part that batching leaves alone — more
+narrow-eligible mutants means more narrow canary runs, so `gatesMs` itself *grows*.
+
+On the 35-mutant catalog this harness was measured against (`npm test` ≈ 67 s). The canary's `scope`
+is what decides how much of `gatesMs` is fixed, so it is the column that explains the rest:
+
+| Run | canary `scope` | fixed part of `gatesMs` | measured | ratio |
+|---|---|---|---|---|
+| one mutant per invocation *(measured)* | `baseline` | 135 100 — baseline + a whole-suite canary | 2 150 | **62.8×** → fires |
+| all 35 in **one** invocation *(hypothetical)* | `narrow` | ~67 500 — the baseline alone | 41 250 | **~1.6×** → silent |
+
+The first row is a real measurement, taken **before the canary was narrowed** (card 2026-0048, earlier
+in this same epic) — which is why its canary ran the whole suite and counts as fixed. Its share of
+`totalMs` was 98.4%. The second row is what those 35 mutants would have cost in one invocation: a run
+that narrows resolves its canary to `narrow` scope, so only the baseline stays fixed and the ratio
+lands near `1.6×`. **No share of `totalMs` is quoted for it**, deliberately — that would need this
+run's whole `gatesMs`, and the narrow canary half of it depends on how many distinct scopes the 35
+mutants resolve to, which the field data does not record. A figure that cannot be recomputed from the
+row it sits in does not belong in the row.
+
+`10×` therefore sits ~6× above the batched run and ~6× below the per-mutant one. The batched run is
+*already optimal*, and a note telling that operator to batch harder is a false alarm that costs the
+note its credibility — so it is silent **twice over**, on the ratio and on the headroom conjunct,
+either of which alone would hold the line. A deliberate subset run (re-confirming one fix, re-running
+last round's survivors) can trip both, so the note states the numbers and makes the remedy
+conditional rather than reading as a reprimand.
 
 ## The mutant catalog
 
