@@ -100,15 +100,19 @@ function measuredGates(extra = {}) {
       fromCache: false,
       measuredDurationMs: null,
     },
+    // BASELINE scope, as in the field data: the epic's 135 100 ms is two WHOLE-SUITE
+    // runs (baseline 67.5s + canary 67.6s). A canary's scope is what decides whether
+    // its cost is fixed per invocation or scales with the mutants in the run, so a
+    // fixture that gets it wrong cannot exercise the predicate honestly.
     canary: {
       outcome: GateOutcome.PASSED,
       status: 'KILLED',
-      scope: 'narrow',
+      scope: 'baseline',
       grade: 'counted',
-      command: null,
-      target: null,
+      command: 'node --test',
+      target: 'test/a.test.mjs',
       attempts: [],
-      scopes: [],
+      scopes: null,
       durationMs: 67_600,
       detail: 'killed',
       fromCache: false,
@@ -118,7 +122,49 @@ function measuredGates(extra = {}) {
   };
 }
 
+// The other shape: one canary per DISTINCT narrowing command, whose cost therefore
+// scales with the mutants in the run rather than being fixed against them.
+function narrowCanary(durationMs = 67_600) {
+  return {
+    outcome: GateOutcome.PASSED,
+    status: 'KILLED',
+    scope: 'narrow',
+    grade: 'counted',
+    command: null,
+    target: null,
+    attempts: [],
+    scopes: [{
+      command: "node --test 'test/a.test.mjs'",
+      target: 'test/a.test.mjs',
+      status: 'KILLED',
+      grade: 'counted',
+      attempts: [],
+      durationMs,
+      detail: 'killed',
+      mutants: ['m1'],
+      skipped: null,
+    }],
+    durationMs,
+    detail: 'killed',
+    fromCache: false,
+    measuredDurationMs: null,
+  };
+}
+
+// GATES DERIVED FROM THE TIMINGS THEY SUM TO, unless the caller supplies their
+// own. `timings.gatesMs` is `baseline.durationMs + canary.durationMs` on a real
+// report (deriveTimings), and the predicate reads the gate records rather than the
+// bucket -- so a fixture whose two halves disagree tests a report shape the runner
+// cannot produce, and can pass or fail for reasons no real run would.
+//
+// Split as two whole-suite runs (baseline + baseline-scope canary), which is the
+// field data's own shape and makes the whole of gatesMs fixed per invocation.
 function baseReport(extra = {}) {
+  const timings = extra.timings === undefined
+    ? { totalMs: 100, gatesMs: 50, narrowBaselinesMs: 20, mutantsMs: 30 }
+    : extra.timings;
+  const gatesMs = Number.isFinite(timings?.gatesMs) ? timings.gatesMs : 0;
+  const derived = measuredGates();
   return {
     command: 'run',
     isolation: 'in-place',
@@ -126,9 +172,12 @@ function baseReport(extra = {}) {
     learn: false,
     workspaceRoot: '/tmp/x',
     adapter: { name: 'node-test', grade: 'counted', modulePath: null },
-    gates: measuredGates(),
+    gates: {
+      baseline: { ...derived.baseline, durationMs: gatesMs / 2 },
+      canary: { ...derived.canary, durationMs: gatesMs / 2 },
+    },
     narrowBaselines: [],
-    timings: { totalMs: 100, gatesMs: 50, narrowBaselinesMs: 20, mutantsMs: 30 },
+    timings,
     selection: { catalogTotal: 4, selected: 4 },
     mutatedSha: 'abc123',
     reproducible: true,
@@ -194,6 +243,9 @@ describe('the printed cost breakdown', () => {
     const text = formatReport(baseReport({ timings: null }));
 
     assert.doesNotMatch(text, /Cost/);
+    // The label line does not contain "Cost", so checking the heading alone would
+    // pass an implementation that printed the annotations with no table.
+    assert.doesNotMatch(text, /FIXED per invocation/);
     assert.match(text, /Trust gates/, 'the rest of the summary must still render');
   });
 
@@ -208,6 +260,23 @@ describe('the printed cost breakdown', () => {
 
     assert.match(text, /mutantsMs\s+\|\s+3800\s+\|\s+380\.0%/);
     assert.match(text, /sum of per-mutant wall clocks/i);
+    // The off-fixture: an unconditional line would make the explanation
+    // meaningless, since it only explains a share that actually exceeds 100%.
+    assert.doesNotMatch(formatReport(baseReport()), /sum of per-mutant wall clocks/i);
+  });
+
+  test('C6b: a report with no jobs key never prints "at jobs undefined"', () => {
+    // The share-over-100% line names the concurrency that caused it. A report
+    // carrying timings but no `jobs` must not print the word `undefined` into the
+    // one output a human reads.
+    const text = formatReport(baseReport({
+      jobs: undefined,
+      timings: { totalMs: 1_000, gatesMs: 100, narrowBaselinesMs: 50, mutantsMs: 3_800 },
+    }));
+
+    assert.doesNotMatch(text, /at jobs undefined/);
+    assert.doesNotMatch(text, /correct reading at jobs/, 'no concurrency to attribute, so none is named');
+    assert.match(text, /sum of per-mutant wall clocks/i, 'the explanation itself must survive');
   });
 });
 
@@ -222,6 +291,10 @@ describe('the fixed-cost note fires on the pathological run and only on it', () 
     assert.match(text, /62\.8x/);
     assert.match(text, /carried 1 of 35 catalog mutant/);
     assert.match(text, /run --all/);
+    // Nothing was served here, so neither cache line may appear: an unconditional
+    // one would tell this operator their gates were free when they were not.
+    assert.doesNotMatch(text, /served from the gate cache/);
+    assert.doesNotMatch(text, /covers the canary only/);
   });
 
   test('C8: the same 35 mutants in ONE invocation at 3.3x stays silent', () => {
@@ -265,10 +338,41 @@ describe('the fixed-cost note fires on the pathological run and only on it', () 
     assert.match(text, /measuredDurationMs/, 'and points at where the original cost is');
   });
 
-  test('C11: a half-hit says gatesMs covers the canary only', () => {
-    // The normal shape of a narrowing run: the baseline is served, the canary
-    // never is. Without this line the reader cannot tell a 1s gatesMs from a
-    // project with a 1s suite.
+  test('C11: a half-hit with a NARROW canary says so, and stays silent under subset selection', () => {
+    // The normal shape of a narrowing run: the baseline is served, a narrow canary
+    // never is. SUBSET selection deliberately, so the silence below is the
+    // predicate's doing and not the fixture's -- these timings are 31x, and this
+    // test would pass for the wrong reason at `selected === catalogTotal`.
+    //
+    // Silence is correct because a narrow canary is one run per DISTINCT narrowing
+    // command: its cost scales with the mutants in the run, so batching does not
+    // amortise it. Once the full-suite baseline has been served, there is no fixed
+    // cost left here for `run --all` to spread.
+    const gates = measuredGates();
+    const text = formatReport(baseReport({
+      gates: {
+        baseline: { ...gates.baseline, fromCache: true, measuredDurationMs: 67_500, durationMs: 0 },
+        canary: narrowCanary(),
+      },
+      timings: { totalMs: 70_000, gatesMs: 67_600, narrowBaselinesMs: 1_000, mutantsMs: 1_150 },
+      selection: { catalogTotal: 35, selected: 1 },
+    }));
+
+    assert.match(text, /gatesMs covers the canary only/);
+    assert.match(text, /NONE of gatesMs is fixed per invocation/, 'and says why the note is absent');
+    assert.doesNotMatch(text, NOTE);
+    // gate-cache.test.mjs N13 asserts this exact string is ABSENT on a half-hit;
+    // the cost block must not be the thing that resurrects it.
+    assert.doesNotMatch(text, /GATES FROM CACHE/);
+  });
+
+  test('C11b: a half-hit whose canary ran at BASELINE scope re-paid a whole suite, so it fires', () => {
+    // THE HOLE a naive `baseline.fromCache` suppression would open. `run` reaches
+    // baseline canary scope whenever nothing is narrow-canary-eligible
+    // (mutants.schema.md, "The canary's scope"), and that canary IS a whole
+    // baselineCommand run -- re-paid every invocation, exactly the pathology. The
+    // discriminator is the canary's scope, never merely that the baseline was
+    // served.
     const gates = measuredGates();
     const text = formatReport(baseReport({
       gates: {
@@ -276,12 +380,11 @@ describe('the fixed-cost note fires on the pathological run and only on it', () 
         canary: gates.canary,
       },
       timings: { totalMs: 70_000, gatesMs: 67_600, narrowBaselinesMs: 1_000, mutantsMs: 1_150 },
+      selection: { catalogTotal: 35, selected: 1 },
     }));
 
-    assert.match(text, /gatesMs covers the canary only/);
-    // gate-cache.test.mjs N13 asserts this exact string is ABSENT on a half-hit;
-    // the cost block must not be the thing that resurrects it.
-    assert.doesNotMatch(text, /GATES FROM CACHE/);
+    assert.match(text, NOTE);
+    assert.match(text, /31\.4x/, 'the ratio is against the whole-suite canary it really re-paid');
   });
 
   test('C12: a report with no selection prints the table but never the note', () => {
@@ -320,6 +423,78 @@ describe('the fixed-cost note fires on the pathological run and only on it', () 
       text.indexOf('Cost  [totalMs') < text.indexOf('THE HARNESS IS NOT TRUSTWORTHY'),
       'the cost block must print before the early return, not after it',
     );
+  });
+});
+
+describe('each conjunct and each guard is separately load-bearing', () => {
+  test('C15: a DOMINATING ratio over the WHOLE catalog stays silent', () => {
+    // CRITERION 3, discriminated. C8's fixture is doubly silent -- it fails the
+    // ratio conjunct AND the headroom conjunct -- so it passes against a
+    // ratio-only implementation with the headroom conjunct deleted. This fixture
+    // is the field run's own 62.8x with the whole catalog carried: the ONLY thing
+    // holding the note back is `selected === catalogTotal`, so a ratio-only
+    // predicate fails here and nothing else in this file catches that.
+    const text = formatReport(baseReport({
+      timings: PER_MUTANT_INVOCATION.timings,
+      selection: { catalogTotal: 35, selected: 35 },
+    }));
+
+    assert.doesNotMatch(text, NOTE);
+  });
+
+  test('C16: 9.9x stays silent and 10.0x fires -- the threshold, and that it is >=', () => {
+    // Without a boundary pair any threshold in (3.3, 62.8] passes this file, so
+    // the documented 10x would be free to drift to 2 or 50 unnoticed.
+    const at = (gatesMs) => formatReport(baseReport({
+      timings: { totalMs: gatesMs + 1_000, gatesMs, narrowBaselinesMs: 1_000, mutantsMs: 0 },
+      selection: { catalogTotal: 35, selected: 1 },
+    }));
+
+    assert.doesNotMatch(at(9_900), NOTE, '9.9x is below the threshold');
+    assert.match(at(10_000), NOTE, '10.0x must fire -- the comparison is >=, not >');
+  });
+
+  test('C17: absent measurement buckets stay silent rather than dividing by nothing', () => {
+    // A missing bucket coerced to 0 makes the ratio infinite, so the note would
+    // fire on incomplete data -- and would cite "0 ms of measurement" while the
+    // table directly above renders those same buckets as `-`. Absent-or-unusable
+    // stays silent, and the note's arithmetic stays checkable against the table.
+    const text = formatReport(baseReport({
+      timings: { totalMs: 5_000, gatesMs: 100 },
+      selection: { catalogTotal: 35, selected: 1 },
+    }));
+
+    assert.doesNotMatch(text, NOTE);
+    assert.match(text, /narrowBaselinesMs\s+\|\s+-\s+\|\s+-/, 'the table still says they are absent');
+  });
+
+  test('C18: zero measured cost stays silent -- there is no ratio to take', () => {
+    // The buckets are present and really are zero (a run whose mutants errored
+    // before any command). Firing here would divide by nothing; the same rule as
+    // C17 applies to a real zero as to a missing key.
+    const text = formatReport(baseReport({
+      timings: { totalMs: 5_000, gatesMs: 4_900, narrowBaselinesMs: 0, mutantsMs: 0 },
+      selection: { catalogTotal: 35, selected: 1 },
+    }));
+
+    assert.doesNotMatch(text, NOTE);
+  });
+
+  test('C19: the fixed share of gatesMs is named when it is only part of it', () => {
+    // What makes the note's numerator checkable against the table. A narrow canary
+    // sits inside gatesMs but is NOT fixed per invocation, so labelling the whole
+    // bucket "fixed" would be false on any narrowing run.
+    const gates = measuredGates();
+    const narrowed = formatReport(baseReport({
+      gates: { baseline: gates.baseline, canary: narrowCanary(2_000) },
+      timings: { totalMs: 70_000, gatesMs: 69_500, narrowBaselinesMs: 1_000, mutantsMs: 1_150 },
+    }));
+
+    assert.match(narrowed, /Of gatesMs, 67500 ms is FIXED per invocation/);
+    assert.match(narrowed, /scales with the mutants in the run/);
+    // And the whole bucket really is fixed when both gates ran the whole suite.
+    assert.match(formatReport(baseReport()), /gatesMs is FIXED per invocation/);
+    assert.doesNotMatch(formatReport(baseReport()), /Of gatesMs/);
   });
 });
 

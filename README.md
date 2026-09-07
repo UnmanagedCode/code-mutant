@@ -303,7 +303,7 @@ its share of `totalMs`:
 
 | Bucket | What it is |
 |---|---|
-| `gatesMs` | **Fixed per invocation** — the same cost whether the run carries 1 mutant or 35. `0` means both gates were served from cache and this invocation re-paid nothing (see [Gate caching](#gate-caching)); on a narrowing run it covers the canary only, since a narrow canary is never cached. |
+| `gatesMs` | Mostly, but **not always entirely, fixed per invocation** — the block names the fixed part when they differ. A canary at `scope: "baseline"` is a whole-suite run and is fixed; a `"narrow"` one is a run per *distinct* scope, so it scales with the mutants in the run and batching cannot spread it. `0` means **no gate command ran here** — in practice both were served from cache (see [Gate caching](#gate-caching)), though a gate record can also carry `durationMs: 0` with no cache involved. On a narrowing run against a cached baseline, `gatesMs` covers the canary only, since a narrow canary is never cached. |
 | `narrowBaselinesMs` | One measured command per *distinct* scope, so N mutants at one scope cost one entry. |
 | `mutantsMs` | A sum of per-mutant wall clocks, so under `--jobs N` it legitimately exceeds `totalMs` and prints above 100%. |
 
@@ -311,10 +311,22 @@ A share renders `-` when `totalMs` is `0`, and a bucket renders `-` when it is a
 for a measurement that never happened. Field-by-field contract:
 [`mutants.schema.md`](mutants.schema.md#where-a-runs-wall-time-went).
 
-**The `FIXED COST DOMINATES` note.** Emitted when `gatesMs >= 10 ×` the measurement it bought
-(`narrowBaselinesMs + mutantsMs`) **and** the catalog still holds mutants this invocation did not
-carry. Both conjuncts are required, and the threshold is the constant `FIXED_COST_DOMINANCE_RATIO`
-in `lib/report.mjs` — its only home.
+**The `FIXED COST DOMINATES` note.** Emitted when the **fixed** part of `gatesMs` is `>= 10 ×` the
+measurement it bought (`narrowBaselinesMs + mutantsMs`) **and** the catalog still holds mutants this
+invocation did not carry. Both conjuncts are required, and the threshold is the constant
+`FIXED_COST_DOMINANCE_RATIO` in `lib/report.mjs` — its only home.
+
+The numerator is the fixed part rather than the whole bucket because that is the only cost more
+mutants per invocation can amortise. So a narrowing run whose baseline was served from cache is
+silent — what it re-paid was a narrow canary, which batching would *add* to, not spread — while a
+`run` that reached `scope: "baseline"` (nothing narrow-canary-eligible) really did re-pay a whole
+suite and still fires.
+
+It is also silent, before the ratio is taken at all, when: **nothing was measured** (a failed gate,
+or `baseline`, which carries no mutants); **both measurement buckets are not finite and positive**,
+so there is no denominator to divide by; or the report carries **no `selection`** — `probe` and
+`baseline` set none, and absent is treated as unsatisfied rather than guessed. A missed note costs
+nothing; a false one teaches the reader to skip the real one.
 
 Why a ratio against *measurement* rather than a share of `totalMs`: batching k mutants into one
 invocation divides that ratio by k while leaving `gatesMs` untouched, whereas the share barely moves.
