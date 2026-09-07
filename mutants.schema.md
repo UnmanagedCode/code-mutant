@@ -418,7 +418,9 @@ buckets with each one's share of `totalMs` in the non-`--json` summary, and emit
 `FIXED COST DOMINATES` note when the **fixed** part of `gatesMs` is `>= 10 ×` the measurement it
 bought *and* the catalog still holds mutants this invocation did not carry
 (`selection.selected < selection.catalogTotal`). It is silent when nothing was measured, when either
-measurement bucket is missing or their sum is 0, and when the report carries no `selection`. The
+measurement bucket is missing or their sum is 0, when the report carries no `selection`, and when the
+fixed part of `gatesMs` is 0 (fully cached, or only narrow-scope gate work ran — nothing batching
+could spread). The
 threshold lives in exactly one place, `FIXED_COST_DOMINANCE_RATIO` in `lib/report.mjs`; `--json`
 deliberately carries **no** derived ratio or flag, only the four raw buckets below. Rationale and the
 two runs the threshold separates:

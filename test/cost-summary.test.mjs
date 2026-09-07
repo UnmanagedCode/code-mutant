@@ -223,6 +223,10 @@ describe('the printed cost breakdown', () => {
     assert.doesNotMatch(text, /NaN/);
     assert.doesNotMatch(text, /0\.0%/);
     assert.match(text, /gatesMs\s+\|\s+0\s+\|\s+-/);
+    // Nothing ran, so there is no fixed per-invocation cost to characterise --
+    // calling a zero bucket "FIXED per invocation" is a claim about a measurement
+    // that never happened.
+    assert.doesNotMatch(text, /FIXED per invocation/);
   });
 
   test('C4: an absent bucket renders "-" in both cells, never "undefined"', () => {
@@ -298,10 +302,11 @@ describe('the fixed-cost note fires on the pathological run and only on it', () 
   });
 
   test('C8: the same 35 mutants in ONE invocation at 3.3x stays silent', () => {
-    // CRITERION 3, and the whole difficulty of this card. The gates are still
-    // 75.7% of this run -- a share-of-totalMs predicate fires here -- but the run
-    // is already optimal, so a note telling this operator to batch harder is a
-    // false alarm that costs the note its credibility.
+    // Rules out a share-of-totalMs predicate, and nothing more: the gates are
+    // still 75.7% of this run, so a share threshold fires here even though the run
+    // is already optimal. This fixture is DOUBLY silent (it fails the ratio
+    // conjunct as well as the headroom one), so it does not discriminate the
+    // headroom conjunct -- C15 owns that.
     const text = formatReport(baseReport(BATCHED_INVOCATION));
 
     assert.doesNotMatch(text, NOTE);
@@ -336,6 +341,10 @@ describe('the fixed-cost note fires on the pathological run and only on it', () 
     assert.doesNotMatch(text, NOTE);
     assert.match(text, /served from the gate cache/);
     assert.match(text, /measuredDurationMs/, 'and points at where the original cost is');
+    // The contradiction this pins: "gatesMs is FIXED per invocation" printed
+    // directly above "gatesMs is 0 ... re-paid no fixed cost" tells the reader
+    // both that there is a fixed cost here and that there is not.
+    assert.doesNotMatch(text, /FIXED per invocation/);
   });
 
   test('C11: a half-hit with a NARROW canary says so, and stays silent under subset selection', () => {
@@ -478,6 +487,49 @@ describe('each conjunct and each guard is separately load-bearing', () => {
     }));
 
     assert.doesNotMatch(text, NOTE);
+  });
+
+  test('C19a: a MIXED canary contributes its baseline half only, net of scopes[]', () => {
+    // The one arm of fixedGateMs that does arithmetic, and the only test of its
+    // clamp. Hand-checkable: a 67600 ms mixed canary with 1000 ms of narrow scopes
+    // has a 66600 ms baseline half, and the served baseline adds nothing. An
+    // implementation crediting the whole canary would say 67600 and 31.4x.
+    const gates = measuredGates();
+    const text = formatReport(baseReport({
+      gates: {
+        baseline: { ...gates.baseline, fromCache: true, measuredDurationMs: 67_500, durationMs: 0 },
+        canary: {
+          ...gates.canary,
+          scope: 'mixed',
+          durationMs: 67_600,
+          scopes: [{ command: 'c', target: 't', status: 'KILLED', grade: 'counted', attempts: [], durationMs: 1_000, detail: 'k', mutants: ['m1'], skipped: null }],
+        },
+      },
+      timings: { totalMs: 70_000, gatesMs: 67_600, narrowBaselinesMs: 1_000, mutantsMs: 1_150 },
+      selection: { catalogTotal: 35, selected: 1 },
+    }));
+
+    assert.match(text, /Of gatesMs, 66600 ms is FIXED per invocation/);
+    assert.match(text, NOTE);
+    assert.match(text, /66600 ms of fixed gate cost bought 2150 ms of measurement \(31\.0x\)/);
+  });
+
+  test('C19b: a canary scope this cannot read contributes nothing', () => {
+    // Every unknown in fixedGateMs biases toward silence. Crediting an
+    // unrecognised scope as whole-suite would fire the note off data the renderer
+    // does not understand -- the same defect class as a coerced-to-zero bucket.
+    const gates = measuredGates();
+    const text = formatReport(baseReport({
+      gates: {
+        baseline: { ...gates.baseline, fromCache: true, measuredDurationMs: 67_500, durationMs: 0 },
+        canary: { ...gates.canary, scope: 'something-new', durationMs: 67_600, scopes: null },
+      },
+      timings: { totalMs: 70_000, gatesMs: 67_600, narrowBaselinesMs: 1_000, mutantsMs: 1_150 },
+      selection: { catalogTotal: 35, selected: 1 },
+    }));
+
+    assert.doesNotMatch(text, NOTE);
+    assert.match(text, /NONE of gatesMs is fixed per invocation/);
   });
 
   test('C19: the fixed share of gatesMs is named when it is only part of it', () => {

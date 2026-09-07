@@ -1,10 +1,13 @@
 // CACHING THE BASELINE AND CANARY GATES ACROSS INVOCATIONS.
 //
-// `timings.gatesMs` is a fixed cost paid once per invocation and independent of
-// mutant count: two full `baselineCommand` runs. Measured on code-conductor
-// (`npm test` ~67s, 35-mutant catalog): ~135,000ms, 98.6% of a single-mutant
+// The BASELINE half of `timings.gatesMs` is a fixed cost paid once per invocation
+// and independent of mutant count. Measured on code-conductor (`npm test` ~67s,
+// 35-mutant catalog) BEFORE the canary was narrowed (card 2026-0048), when the
+// floor was two full `baselineCommand` runs: ~135,000ms, 98.6% of a single-mutant
 // invocation. Nothing about that work depends on which mutants are in the run,
-// yet a repeat invocation against an unchanged tree re-measured both.
+// yet a repeat invocation against an unchanged tree re-measured both. (A narrowed
+// canary is variable cost -- one run per distinct scope -- which is why it is
+// never cached and why lib/report.mjs counts only the whole-suite part as fixed.)
 //
 // EVERY CLAIM BELOW IS BIASED THE SAME WAY THE DESIGN IS. A false miss costs one
 // re-measure; a false hit reports a green baseline against a tree that changed,

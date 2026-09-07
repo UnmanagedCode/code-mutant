@@ -323,26 +323,37 @@ silent — what it re-paid was a narrow canary, which batching would *add* to, n
 suite and still fires.
 
 It is also silent, before the ratio is taken at all, when: **nothing was measured** (a failed gate,
-or `baseline`, which carries no mutants); **both measurement buckets are not finite and positive**,
-so there is no denominator to divide by; or the report carries **no `selection`** — `probe` and
-`baseline` set none, and absent is treated as unsatisfied rather than guessed. A missed note costs
-nothing; a false one teaches the reader to skip the real one.
+or `baseline`, which carries no mutants); **either measurement bucket is not finite, or their sum is
+0**, so there is no denominator to divide by; the report carries **no `selection`** — `probe` and
+`baseline` set none, and absent is treated as unsatisfied rather than guessed; or **the fixed part of
+`gatesMs` is 0** — fully cached, or only narrow-scope gate work ran, so there is nothing batching
+could spread. A missed note costs nothing; a false one teaches the reader to skip the real one.
 
 Why a ratio against *measurement* rather than a share of `totalMs`: batching k mutants into one
-invocation divides that ratio by k while leaving `gatesMs` untouched, whereas the share barely moves.
-On the 35-mutant catalog this harness was measured against (`npm test` ≈ 67 s):
+invocation divides the **fixed** cost per unit of measurement by k, while the share barely moves.
+Note it is only the fixed part that batching leaves alone — more narrow-eligible mutants means more
+narrow canary runs, so `gatesMs` itself *grows*.
 
-| Run | `gatesMs` | measured | ratio | share of `totalMs` |
-|---|---|---|---|---|
-| one mutant per invocation | 135 100 | 2 150 | **62.8×** → fires | 98.4% |
-| all 35 in **one** invocation | 135 100 | 41 250 | **3.3×** → silent | 75.7% |
+On the 35-mutant catalog this harness was measured against (`npm test` ≈ 67 s). The canary's
+`scope` is what decides how much of `gatesMs` is fixed, so it is the column that explains the rest:
 
-`10×` sits ~3× above the batched run and ~6× below the per-mutant one. The share cannot separate
-them — which is the point: the batched run is *already optimal*, and a note telling that operator to
-batch harder is a false alarm that costs the note its credibility. The second conjunct holds the line
-structurally as well, since a run that carried the whole catalog has no batching left. A deliberate
-subset run (re-confirming one fix, re-running last round's survivors) can trip both, so the note
-states the numbers and makes the remedy conditional rather than reading as a reprimand.
+| Run | canary `scope` | fixed part of `gatesMs` | measured | ratio | share of `totalMs` |
+|---|---|---|---|---|---|
+| one mutant per invocation *(measured)* | `baseline` | 135 100 — baseline + a whole-suite canary | 2 150 | **62.8×** → fires | 98.4% |
+| all 35 in **one** invocation *(hypothetical)* | `narrow` | ~67 500 — the baseline alone | 41 250 | **~1.6×** → silent | 75.7% |
+
+The first row is a real measurement, taken **before the canary was narrowed** (card 2026-0048, earlier
+in this same epic) — which is why its canary ran the whole suite and counts as fixed. The second row
+is what those 35 mutants would have cost in one invocation: a run that narrows resolves its canary to
+`narrow` scope, so only the baseline stays fixed and the ratio lands near `1.6×`.
+
+`10×` therefore sits ~6× above the batched run and ~6× below the per-mutant one. The share of
+`totalMs` cannot separate them at all — which is the point: the batched run is *already optimal*, and
+a note telling that operator to batch harder is a false alarm that costs the note its credibility.
+That run is silent **twice over**, on the ratio and on the headroom conjunct, and either alone would
+hold the line. A deliberate subset run (re-confirming one fix, re-running last round's survivors) can
+trip both, so the note states the numbers and makes the remedy conditional rather than reading as a
+reprimand.
 
 ## The mutant catalog
 
