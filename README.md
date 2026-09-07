@@ -295,6 +295,43 @@ here. An entry is written only by a run that proved it left no trace, so a run k
 re-pays the gates rather than caching a tree it may have poisoned. Full contract — key inputs, write conditions, the crash-window ordering — is in
 [`mutants.schema.md`](mutants.schema.md#caching-the-gates).
 
+### Where a run's wall time went
+
+**Look at the printed `Cost` block first** — it sits under `Trust gates` in every `run`, `probe` and
+`baseline` summary, needs no `--json`, and prints on a failed-gate run too. Three buckets, each with
+its share of `totalMs`:
+
+| Bucket | What it is |
+|---|---|
+| `gatesMs` | **Fixed per invocation** — the same cost whether the run carries 1 mutant or 35. `0` means both gates were served from cache and this invocation re-paid nothing (see [Gate caching](#gate-caching)); on a narrowing run it covers the canary only, since a narrow canary is never cached. |
+| `narrowBaselinesMs` | One measured command per *distinct* scope, so N mutants at one scope cost one entry. |
+| `mutantsMs` | A sum of per-mutant wall clocks, so under `--jobs N` it legitimately exceeds `totalMs` and prints above 100%. |
+
+A share renders `-` when `totalMs` is `0`, and a bucket renders `-` when it is absent — never `0.0%`
+for a measurement that never happened. Field-by-field contract:
+[`mutants.schema.md`](mutants.schema.md#where-a-runs-wall-time-went).
+
+**The `FIXED COST DOMINATES` note.** Emitted when `gatesMs >= 10 ×` the measurement it bought
+(`narrowBaselinesMs + mutantsMs`) **and** the catalog still holds mutants this invocation did not
+carry. Both conjuncts are required, and the threshold is the constant `FIXED_COST_DOMINANCE_RATIO`
+in `lib/report.mjs` — its only home.
+
+Why a ratio against *measurement* rather than a share of `totalMs`: batching k mutants into one
+invocation divides that ratio by k while leaving `gatesMs` untouched, whereas the share barely moves.
+On the 35-mutant catalog this harness was measured against (`npm test` ≈ 67 s):
+
+| Run | `gatesMs` | measured | ratio | share of `totalMs` |
+|---|---|---|---|---|
+| one mutant per invocation | 135 100 | 2 150 | **62.8×** → fires | 98.4% |
+| all 35 in **one** invocation | 135 100 | 41 250 | **3.3×** → silent | 75.7% |
+
+`10×` sits ~3× above the batched run and ~6× below the per-mutant one. The share cannot separate
+them — which is the point: the batched run is *already optimal*, and a note telling that operator to
+batch harder is a false alarm that costs the note its credibility. The second conjunct holds the line
+structurally as well, since a run that carried the whole catalog has no batching left. A deliberate
+subset run (re-confirming one fix, re-running last round's survivors) can trip both, so the note
+states the numbers and makes the remedy conditional rather than reading as a reprimand.
+
 ## The mutant catalog
 
 Per-review, gitignored, lives at `.mutation/mutants.json`, owned by the prover. The full

@@ -355,6 +355,11 @@ finding can be pointed at exactly the commit it was found against.
                                                            // measured one measuredDurationMs is null. Never absent.
   narrowBaselines: [ { command, green, counts, durationMs } ],   // one entry per DISTINCT narrow scope
   timings: { totalMs, gatesMs, narrowBaselinesMs, mutantsMs },
+  selection: { catalogTotal, selected },        // `run` ONLY -- absent on probe/baseline. How many catalog
+                                                // mutants this invocation carried, out of how many the
+                                                // catalog holds. The amortisation denominator: it is what
+                                                // decides whether the printed FIXED COST DOMINATES note has
+                                                // a remedy left to name
   resumed:   { journal, key, reused, ran } | null,   // non-null iff --resume was passed
   resumable: { key, available } | null,             // ADVISORY: a journal matches and --resume was NOT passed
   gateCache: { status: "hit"|"miss"|"bypassed",
@@ -407,6 +412,15 @@ a mutant runs a narrowed scope, so comparing those two would show the narrowing,
 Every measured command reports its own `durationMs`, and `timings` is **derived** from those — it
 sums nothing that is not also on the report, so the breakdown cannot drift from the numbers it
 sums.
+
+**The first place to look is the printed `Cost` block**, not this table — it renders these three
+buckets with each one's share of `totalMs` in the non-`--json` summary, and emits a
+`FIXED COST DOMINATES` note when `gatesMs >= 10 ×` the measurement it bought *and* the catalog still
+holds mutants this invocation did not carry (`selection.selected < selection.catalogTotal`). The
+threshold lives in exactly one place, `FIXED_COST_DOMINANCE_RATIO` in `lib/report.mjs`; `--json`
+deliberately carries **no** derived ratio or flag, only the four raw buckets below. Rationale and the
+two runs the threshold separates:
+[README](README.md#where-a-runs-wall-time-went).
 
 | Field | Covers |
 |---|---|

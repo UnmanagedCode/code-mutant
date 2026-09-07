@@ -432,6 +432,10 @@ async function commandRun(flags, lists, log) {
   });
   report.command = 'run';
   report.catalog = catalog.path;
+  // The amortisation denominator, recorded BEFORE writeResults so the results file
+  // and --json carry it too. What makes "the gates dominated this run" actionable
+  // or not: a run that already carried the whole catalog has no batching left.
+  report.selection = { catalogTotal: catalog.mutants.length, selected: mutants.length };
   report.resultsFile = writeResults(repoRoot, runId(), toJson(report));
   const code = emit(report, flags);
   // Emitted on stderr regardless of --json, because --json owns stdout and this
