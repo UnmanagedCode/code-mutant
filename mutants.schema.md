@@ -184,6 +184,7 @@ shape](#the-shape-of-an-ungraded-result)) — or a usage error before the run:
 | `unexplained-exit` | Counted mode: the command exited non-zero while naming **no failing test** — something the adapter cannot see went wrong, so the run is not observably green. Never reported as `SURVIVED`. |
 | `canary-not-established` | The command that would judge this mutant could not be shown to observe a deliberate break, so nothing it reports is interpretable. Two shapes: **exit-code mode**, where the per-mutant canary could not break the mutated file; and **counted mode**, where this mutant's own narrow scope was not attested by the canary gate (`gates.canary.status: "PARTIAL"`) while some other scope was. |
 | `timed-out` | The command was killed at its deadline (`results[].deadlineMs`; `timeoutMs` only for a command with no unmutated reference). |
+| `inplace-locked` | Trust gate, **in-place isolation only**, checked before every other gate: another code-mutant process holds this worktree — a claim in `<git-dir>/code-mutant-inplace.lock.d/` that could not be shown to belong to a dead process. Exit 2, `results: []`, nothing mutated; the detail names the holding pid, its command and the claim directory. A claim left by a dead, pid-reused or rebooted-away process is ignored and swept instead. `copy` mode never takes the lock. The lock's residual refusals are enumerated under **Isolation modes** in the README. |
 | `dirty-tree` | Trust gate, `baseline`/`run` (before baseline and canary): the worktree has uncommitted or untracked-and-not-gitignored changes. `--allow-dirty` overrides it; `probe` only warns. See [The clean-tree gate](#the-clean-tree-gate). |
 | `empty-diff-vs-base` | Trust gate, `run` only: `baseBranch` is configured, distinct from the branch HEAD is on, and there is no diff against it — nothing committed to mutate. See [The clean-tree gate](#the-clean-tree-gate). |
 | `base-unresolvable` | Trust gate, `run` only: `baseBranch`/`--base` does not resolve to a real branch or commit. A gate failure, not a process exit — a typo'd branch name must read the same as any other trust-gate failure. |
@@ -312,6 +313,16 @@ finding can be pointed at exactly the commit it was found against.
   mutatedSha:    string|null,     // `git rev-parse HEAD` -- points a survivor at a re-runnable commit
   reproducible:  boolean,         // false only when --allow-dirty was used to proceed on a dirty tree
   gates: {
+    inPlaceLock: { outcome: "passed"|"failed", code: "inplace-locked"|null, claimDir,
+                   holder: { pid, startTime, host, command, acquiredAt, tree }|null,
+                   blockedBy: number, detail },
+                                                         // IN-PLACE ONLY: the key is ABSENT under copy
+                                                         // isolation. `holder` names the blocking claim with the
+                                                         // earliest acquiredAt, and is null when no blocker could
+                                                         // be read at all (a truncated or hand-edited claim);
+                                                         // `blockedBy` counts every claim that blocked. Checked
+                                                         // BEFORE cleanTree, so a refusal here leaves every key
+                                                         // below absent
     cleanTree: { outcome: "passed"|"failed", code: "dirty-tree"|null, dirty, allowedDirty, detail },
     baseDiff:  { outcome: "passed"|"failed"|"not-established",
                  code: "empty-diff-vs-base"|"base-unresolvable"|"base-diff-unreadable"|null,

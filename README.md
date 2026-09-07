@@ -24,9 +24,9 @@ none, so there is no stage named after this role for a conductor to find. Spawn 
 slot the workflow already opens for a worker running alongside the implementer. Unlike the
 inspect-only reviewers it runs beside, it **writes to the implementer's worktree** — under
 `in-place` isolation the mutant is applied there and byte-restored after each measurement — so
-exactly one prover runs per round: the runner's concurrency guard (`lib/occupancy.mjs`) lives
-inside a single runner process, so two concurrent `/code-mutant:prove` runs would mutate one tree
-with neither detecting the other.
+exactly one prover runs per round: a second concurrent in-place invocation is **refused** with
+`inplace-locked` (exit 2) before it mutates anything, so the rule is enforced rather than assumed
+— see the cross-process lock under [Isolation modes](#isolation-modes).
 
 The implementer's own coverage duty is to *state*, not to prove: name which invariant each test
 pins, and stop there. It is never briefed to break source to watch a test fail — no mutating,
@@ -128,6 +128,39 @@ is not shipped for a given stack is recorded in
   Restore never uses `git checkout --` or `git apply --reverse` — both would silently destroy any
   uncommitted edits already in the file being mutated.
 
+**In-place takes a cross-process lock, and a second invocation is refused rather than serialised.**
+`jobs` is clamped to 1 in-place, but that clamp binds inside one process; two sibling `mutate.mjs`
+processes against one worktree would interleave their snapshot and restore, so one would measure
+its baseline against the other's applied mutation. So every in-place `run`/`baseline`/`probe`
+publishes a claim file in `<git-dir>/code-mutant-inplace.lock.d/` — `.git` for the main checkout,
+`.git/worktrees/<name>` for a linked worktree, so two worktrees of one repo lock independently, and
+`git status` never reports it. If any other claim there cannot be shown to belong to a dead
+process, the run refuses with the `inplace-locked` gate code (exit 2, [Refusals](mutants.schema.md#refusals))
+naming the holding pid, **before** the clean-tree gate and before anything is mutated. `copy` mode
+takes no lock at all and still runs `jobs > 1`: every worker there owns its own tree.
+
+Each claim carries the holder's pid, its `/proc` process start time and the machine's boot id, so a
+claim left by a crashed, pid-reused or rebooted-away process is *ignored and swept* rather than
+wedging the worktree. **No crash state needs a human**: a killed holder leaves one claim, and the
+next run classifies it dead, ignores it and deletes it. Four things still refuse:
+
+- **Simultaneous starts may all refuse, and often will.** Each process publishes its claim before it
+  lists the directory, so at most one can ever hold — but when N processes genuinely start together,
+  all of them seeing each other is the *typical* outcome, not a rare interleaving: a 12-way fan-out
+  would plausibly refuse all 12. Nothing is mutated and each one withdraws its own claim, so the fix
+  is to **start them one at a time**, not to re-run the same fan-out.
+- **A claim written by another host** (a `.git` on a network filesystem) blocks until removed by
+  hand: a pid liveness check about a different machine means nothing.
+- **A hand-edited or truncated claim** blocks until removed by hand. The harness cannot write one —
+  a claim is published complete, by `link(2)` from a temp file — and a claim that cannot be *proven*
+  dead is deliberately never deleted, since deleting one whose payload merely failed to read would
+  admit a second holder.
+- **A pid-reused holder on a host with no `/proc`** cannot be told from a live one, so it blocks
+  until that pid exits.
+
+In each case `rm` the named claim in `<git-dir>/code-mutant-inplace.lock.d/` once no code-mutant
+process is running against the tree, or use `--copy`.
+
 **`--jobs N` in copy mode runs the project's suite N times concurrently, in N copies.** Each copy is
 its own tree, but a suite is not automatically safe to run against itself. Use `jobs=1` if the suite
 binds a fixed TCP port, writes a fixed temp or data directory, shares a database or an on-disk
@@ -174,6 +207,11 @@ mutants in one workspace, foreign mutation bytes left in it, or a mutation that 
 own measured run. All three are `ERROR` (exit 5), never `SURVIVED` and never a downgraded verdict —
 a race that can fake a survivor can fake a kill just as easily and in silence, so nothing is known
 in either direction. See `lib/occupancy.mjs`.
+
+Don't confuse those with `inplace-locked`: it is a **gate** code, not a `Reason` — run-level, exit
+2, refused before any mutant is planned and before anything is measured, whereas the three above are
+per-mutant and detected after the fact. See the cross-process lock under
+[Isolation modes](#isolation-modes).
 
 ### Three trust gates
 
