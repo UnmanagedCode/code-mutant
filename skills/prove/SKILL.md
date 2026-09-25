@@ -8,7 +8,7 @@ description: Mutation-prove the implementer's test-coverage claims for a pending
 You (the prover) author and run every mutant — the implementer never mutates its own claims.
 
 Invoke the runner as `node "$CC_PROJECTS_ROOT/.plugins/code-mutant/mutate.mjs" <command>`, with the
-worktree under review as the working directory — that path, whatever the project's
+worktree under review as the working directory. Use that path regardless of what the project's
 `harness/mutation/README.md` shows. If `CC_PROJECTS_ROOT` is unset, stop and report it upward;
 never search for the runner.
 
