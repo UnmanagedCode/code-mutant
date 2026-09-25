@@ -395,8 +395,15 @@ is coupled to exact source text and rots on the next refactor of code nobody is 
 
 ## CLI — `mutate.mjs`
 
-Stack-agnostic; the test command is always a shell string. Invoked directly, from wherever
-`harness/mutation/config.json` is resolved for the current project:
+Stack-agnostic; the test command is always a shell string. The runner lives at
+`$CC_PROJECTS_ROOT/.plugins/code-mutant/mutate.mjs` and resolves the project from its working
+directory (`git rev-parse --show-toplevel`, `findRepoRoot` in `lib/workspace.mjs`), so run it from
+inside the project or worktree under test — never from the plugin directory, and never via a
+relative `../` path, which resolves differently from a main checkout and from a worktree:
+
+- **`CC_PROJECTS_ROOT`** — the absolute projects root. code-conductor exports it into every worker
+  it spawns; in any other shell, `export CC_PROJECTS_ROOT=<absolute projects root>` first.
+- Below, `node mutate.mjs` is shorthand for `node "$CC_PROJECTS_ROOT/.plugins/code-mutant/mutate.mjs"`.
 
 ```
 node mutate.mjs baseline                    [--copy|--in-place] [--allow-dirty]
