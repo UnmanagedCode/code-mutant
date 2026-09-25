@@ -1,8 +1,12 @@
 # Scaffold a mutation-verification harness
 
 Build a project-local mutation-testing harness at `harness/mutation/`, driven by the shared
-`code-mutant` runner (`mutate.mjs`) as a sibling project — so a prover can later run
-`/code-mutant:prove` against this project. This is a one-time bootstrap.
+`code-mutant` runner — so a prover can later run `/code-mutant:prove` against this project. This is
+a one-time bootstrap.
+
+Invoke the runner as `node "$CC_PROJECTS_ROOT/.plugins/code-mutant/mutate.mjs" <command>`, with
+this project as the working directory. If `CC_PROJECTS_ROOT` is unset, stop and report it; never
+search for the runner.
 
 ## What to build
 
@@ -68,12 +72,14 @@ Build a project-local mutation-testing harness at `harness/mutation/`, driven by
    journalled a baseline-scope target.
 6. Write `harness/mutation/README.md` documenting how to invoke the harness for *this* project.
    Command syntax and flags are `mutate.mjs`'s own CLI, so read it directly (`--help` or its
-   source) rather than copying examples from another project's harness, which can drift. Call
-   nothing in it verified unless you ran it in this project — name the command and what it
-   produced, or don't make the claim.
+   source) rather than copying examples from another project's harness, which can drift. Write
+   every invocation in that `$CC_PROJECTS_ROOT` form — never a relative path to the runner, and
+   never this machine's expanded path — and state that a shell outside code-conductor must export
+   `CC_PROJECTS_ROOT` (the absolute projects root) first. Call nothing in it verified unless you
+   ran it in this project — name the command and what it produced, or don't make the claim.
 7. Add `.mutation/` to this project's `.gitignore` (per the workspace git-hygiene convention —
    verify the pattern actually matches via `git status` before the first commit that touches it).
-8. **Verify by running it before you finish.** `node <path>/mutate.mjs baseline` must report the
+8. **Verify by running it before you finish.** `mutate.mjs baseline`, invoked as above, must report the
    baseline `passed` **and** the canary `KILLED`; the one exception is an `exit-code`-grade harness,
    which has no named test to inject and reports `not-established`. Files existing is not "done" —
    fix `config.json` (or the parser) until the gates read that way, and record the numbers in the
