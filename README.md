@@ -368,10 +368,11 @@ per-entry field schema is specified in [`mutants.schema.md`](mutants.schema.md) 
 authoritative format; this README only covers what the catalog is for.
 
 Alongside it, `run` appends every completed verdict to a **journal** under `.mutation/journal/`, so
-an interrupted run can be resumed with `run --resume` instead of re-measuring everything it already
-graded. Contract — which key, what invalidates it, and the two things resume never does — is in
-[`mutants.schema.md`](mutants.schema.md#resuming-a-run). Resume reuses per-mutant verdicts only; the
-gates are a separate decision on a separate key ([Gate caching](#gate-caching)).
+`run --resume`, after an interruption or a catalog edit, re-measures only the mutants that changed
+instead of everything already graded. Contract — which key, what invalidates it, and the two things
+resume never does — is in [`mutants.schema.md`](mutants.schema.md#resuming-a-run). Resume reuses
+per-mutant verdicts only; the gates are a separate decision on a separate key
+([Gate caching](#gate-caching)).
 
 A site is either an anchor + replacement (a substring swap, refused unless the anchor matches
 exactly once and the replacement isn't a no-op) or a unified `patch` applied with `git apply`, for
