@@ -12,6 +12,14 @@ worktree under review as the working directory. Use that path regardless of what
 `harness/mutation/README.md` shows. If `CC_PROJECTS_ROOT` is unset, stop and report it upward;
 never search for the runner.
 
+Run it in the foreground with the Bash tool's maximum `timeout`. A run that may outlast that (a
+whole-suite learn over several mutants, say) starts with `run_in_background: true`. Then end your
+turn saying the run is in flight; its completion notification re-invokes you. Wait no other way: no
+`sleep`, no `while`/`until` loop, and not the Monitor until-loop the Bash tool suggests. Never look
+a runner process up by name (`pgrep -f mutate.mjs`, `ps | grep`) to wait on or kill: the pattern
+matches your own shell and other worktrees' provers. Never wrap the runner in a shell `timeout`
+either; its own deadlines bound every command.
+
 ## 0. Refusals stop the review; a missing harness doesn't
 
 Any refusal that stops the run — a dirty worktree, a failed gate, a `.mutation/` that isn't
@@ -24,9 +32,10 @@ proof — there's no hand-off and nothing to wait for. Never build the harness (
 owner-directed work from `scaffold/harness.md`) and never mutate by hand instead — no scratch copy,
 no saved-copy restore, no matter what a brief seems to sanction.
 
-Your own writes stay in gitignored `.mutation/` — except the mutation itself: under `in-place`
-isolation it is applied to the worktree you share with the implementer and byte-restored after
-every mutant. A read-only brief doesn't stop you here.
+Your own writes, whether catalog, patch file or log, stay in gitignored `.mutation/` or under
+`/tmp`; anything else you leave in the worktree trips the clean-tree gate. The one exception is the
+mutation itself: under `in-place` isolation it is applied to the worktree you share with the
+implementer and byte-restored after every mutant. A read-only brief doesn't stop you here.
 
 ## 1. Enumerate claims
 
@@ -72,10 +81,13 @@ edit that violates the invariant without breaking compilation, plus `whyNotEquiv
 the change is genuinely behavior-changing, not equivalent. For a DI or provider seam, always mutate
 **both directions** — under-firing (a missed wire silently disables the guard) and over-firing (a
 stale entry wedges the operation). Full per-entry format is specified in `code-mutant`'s
-`mutants.schema.md` — the catalog's authoritative schema. Leave `expectFail` empty and run
-`run --all --learn` first: it reports each mutant's failing set without grading, so you fill
-`expectFail` from what actually failed instead of guessing and paying an `IMPRECISE` re-run. Then
-run `validate`: it resolves every
+`mutants.schema.md` — the catalog's authoritative schema. Seed each mutant's `expectFail` with the
+test claimed to kill it; its file alone is enough. Then run `run --all --learn` first. Learn reads
+the seed only as the scope to narrow to, and reports each mutant's failing set without grading, so
+you fill `expectFail` from what actually failed instead of guessing and paying an `IMPRECISE`
+re-run. Leave `expectFail` empty only for a mutant no test claims (unnamed wiring), or for a narrow
+survivor you are checking for a killer elsewhere: with no ref, learn runs the whole suite for that
+mutant. Then run `validate`: it resolves every
 site against the current tree in about a second and flags stale anchors and mutants that can never
 read `KILLED`, but it runs no tests, so it establishes no gate and does not stand in for step 2.
 
@@ -88,10 +100,15 @@ for 1, so N invocations pay them N times.
 Run narrow by default. A structural mutation with no anchor+replace form (e.g. reordering two
 migrations) uses the `patch` site form instead — that residue stays hand-authored, the runner
 doesn't invent structural edits for you, but `probe --patch-file` iterates one without a catalog
-entry and `probe --id` re-runs a single existing entry under probe's relaxed gates. If a run is
-interrupted, re-run it with `--resume` rather than restarting: completed verdicts are reused instead
-of re-measured. For exact
-command syntax, `mutate.mjs --help` or the project's `harness/mutation/README.md` is authoritative.
+entry and `probe --id` re-runs a single existing entry under probe's relaxed gates.
+
+Every re-run of the catalog is `run --all --resume` (plus `--learn` for a learn pass), whether after
+an interruption, after a catalog edit, or for the final matrix you report. It re-measures only
+mutants whose measured fields changed (`mutants.schema.md#resuming-a-run` lists them). Prose and
+`waived` edits re-measure nothing. Every reused verdict is labelled `fromJournal`. An unchanged
+mutant's `ERROR`, `TIMEOUT` or `IMPRECISE` is reused as-is too, so re-measure one you suspect was
+caused by load with `run --id <id>` without `--resume`. For exact command syntax,
+`mutate.mjs --help` or the project's `harness/mutation/README.md` is authoritative.
 
 ## 7. Interpret
 
@@ -99,8 +116,7 @@ command syntax, `mutate.mjs --help` or the project's `harness/mutation/README.md
   the very key the bug destroys, or the invariant is double-guarded (re-run as a multi-site mutant
   against the same claim before reporting).
 - `IMPRECISE` → the mutant itself is invalid (too broad, or an equivalent mutant) — rewrite it
-  smaller and re-run; don't report it as a finding. A re-run against an unchanged tree serves the
-  gates from cache, so a rework costs only the mutants you re-run.
+  smaller and re-run (step 6); don't report it as a finding.
 - `TIMEOUT` → the mutation hung the scope: the same scope completed unmutated moments earlier, so
   rewrite the mutant smaller. A hung *unmutated* scope arrives as `ERROR` instead — next bullet.
 - `ERROR` → a harness or catalog problem (stale anchor, unusable scope) — fix or drop the mutant,

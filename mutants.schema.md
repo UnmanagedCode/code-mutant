@@ -512,7 +512,11 @@ verdict before the one in flight). Gitignored, guarded by the same assertion as
 **Written only when** `reproducible === true` and `mutatedSha !== null` — a `--allow-dirty` run
 journals nothing, because a non-reproducible verdict must never become a resumable one.
 `--resume --allow-dirty` is a usage error (exit 4). Only Phase-B results are journalled; a plan
-failure (stale anchor, unparseable patch) cost no measured command and is free to recompute. A line
+failure (stale anchor, unparseable patch) cost no measured command and is free to recompute.
+Ungraded Phase-B results are journalled too, such as a `TIMEOUT` or an `ERROR` like
+`scope-timed-out`, so resume reuses them on an unchanged mutant. `run --id <id>` without `--resume`
+re-measures one, and its new journal line supersedes the old. A `canary-not-established` refusal is
+never journalled: it belongs to that invocation's gate. A line
 is appended only after restore succeeded for that mutant, so a journalled verdict always implies its
 tree was restored and proved.
 
