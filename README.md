@@ -216,7 +216,8 @@ per-mutant and detected after the fact. See the cross-process lock under
 ### Three trust gates
 
 Before any verdict above is believable, three gates run first — and there is deliberately no way to
-skip them short of `--allow-dirty`. The baseline — and a baseline-scope canary — may be *served*
+skip them short of `--allow-dirty`. (`baseline --no-canary` skips only `baseline`'s own canary,
+which judges nothing: every `run` still establishes its own.) The baseline — and a baseline-scope canary — may be *served*
 rather than re-measured when this exact tree has already been measured ([Gate
 caching](#gate-caching)); a served gate is labelled and its outcome is verbatim, so it is never a
 skipped one.
@@ -288,12 +289,19 @@ and is the correction path when a key matches but something outside it moved.
 from the catalog, which the key deliberately does not cover, so a narrowing run measures it every
 time (~1 narrow run per scope) and the entry records `canary: null`. That is also what keeps the
 key's reason for excluding the catalog true: the cached canary really is a property of the command
-and not of the mutants.
+and not of the mutants. `baseline --no-canary` measures no canary, and its entry records
+`canary: null` too.
+
+**An empty canary slot is filled once.** A later run that hits an entry with `canary: null` and
+measured a fresh, baseline-scope, `KILLED` canary (a run with nothing narrow-canary-eligible) writes
+that canary into the same entry under the same key, carrying every other field over verbatim and
+stamping `canaryMeasuredAt`. It never overwrites a stored canary, and never files a narrow, mixed,
+failed, `not-established` or partial one. So a whole-suite canary is paid at most once per key.
 
 A served gate is never dressed up as a measured one: its outcome is verbatim (`not-established` stays
 `not-established`), `fromCache: true` sits beside it in `--json` and on the printed gate line, and the
-report carries a `GATES FROM CACHE` banner — or `BASELINE FROM CACHE`, when the canary was measured
-here. An entry is written only by a run that proved it left no trace, so a run killed mid-mutation
+report carries a `GATES FROM CACHE` banner — naming both timestamps when the canary was filled after
+the baseline — or `BASELINE FROM CACHE`, when the canary was measured here or skipped. An entry is written only by a run that proved it left no trace, so a run killed mid-mutation
 re-pays the gates rather than caching a tree it may have poisoned. Full contract — key inputs, write conditions, the crash-window ordering — is in
 [`mutants.schema.md`](mutants.schema.md#caching-the-gates).
 
@@ -408,7 +416,7 @@ relative `../` path, which resolves differently from a main checkout and from a 
 
 ```
 node mutate.mjs baseline                    [--copy|--in-place] [--allow-dirty]
-                                            [--remeasure-gates] [--json]
+                                            [--remeasure-gates] [--no-canary] [--json]
 node mutate.mjs run [--id <id> ...] [--all] [--learn] [--copy|--in-place] [--jobs N]
                     [--base <branch>] [--allow-dirty] [--resume] [--remeasure-gates] [--json]
 node mutate.mjs validate                    [--json]
@@ -425,8 +433,11 @@ node mutate.mjs candidates [--base <branch>] [--json]
 subcommand is *for*.
 
 - **`baseline`** — runs the trust gates and stops. Measures `baselineCommand` in the configured
-  isolation mode, records pass/fail/skip, and synthesizes a canary. Nothing else in the run is
-  trustworthy until this is green and the canary comes back `KILLED`.
+  isolation mode, records pass/fail/skip, and synthesizes a canary. `--no-canary` skips the canary
+  and reports it `not-established` — for a baseline taken only to warm the gate cache before `run`,
+  since every `run` establishes its own canary at the scope it grades; it is a usage error on every
+  other subcommand. Nothing else in the run is trustworthy until this is green and the canary comes
+  back `KILLED` — here, or with `--no-canary`, in the `run` that grades.
 - **`run`** — runs one or more catalog mutants (`.mutation/mutants.json`) by `--id`, or every mutant
   with `--all`. Per mutant: resolve anchor(s)/patch → refuse an ambiguous or no-op edit → measure
   the narrow scope unmutated → apply in the isolated copy → run the narrowed `testCommand` →

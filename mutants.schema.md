@@ -160,6 +160,7 @@ and could not be told apart from the breakage.
 | Some fired, some did not | `PARTIAL` / `partial` | The unattested scopes' mutants are `ERROR` with `canary-not-established`; the rest run and grade. **Not** a gate failure for the exit code — the refused mutants drive it through `noVerdict` (exit 5) instead, and a `CANARY PARTIAL` banner names them at the top of the printed report. |
 | None fired | `FAILED` / `failed` | The wholesale refusal, unchanged: exit 2, `results: []`. |
 | None was required (every scope skipped) | `NOT-ESTABLISHED` / `not-established` | Nothing needed attesting; every mutant `ERROR`s on its own scope. Never read as a pass. |
+| Skipped (`baseline --no-canary`) | `NOT-ESTABLISHED` / `"not-established"` | No canary attempted (`skipped: "no-canary"`, `scope: null`, `command: null`); never a pass; exit code unaffected. `baseline` only — the runner refuses it for any invocation with mutants, so every graded `run` establishes its own. A `CANARY SKIPPED` banner says so at the top of the printed report. |
 
 ## Refusals
 
@@ -338,8 +339,10 @@ finding can be pointed at exactly the commit it was found against.
                                                            // failure to name); [] only when green
     canary:   { outcome: "passed"|"failed"|"not-established"|"partial",
                 status: "KILLED"|"FAILED"|"NOT-ESTABLISHED"|"PARTIAL",
-                scope: "baseline"|"narrow"|"mixed",   // WHICH COMMAND(S) THIS GATE ATTESTS ABOUT
-                grade, command,                       // command: baselineCommand at baseline/mixed, null at narrow
+                scope: "baseline"|"narrow"|"mixed"|null,   // WHICH COMMAND(S) THIS GATE ATTESTS ABOUT;
+                                                      // null only when skipped
+                grade, command,                       // command: baselineCommand at baseline/mixed, null at
+                                                      // narrow and when skipped
                 target,                               // the BASELINE half's target; null at pure narrow scope
                 attempts: [ { target, durationMs, why } ],   // the baseline half's: every candidate tried and why
                 scopes: [ {                                  // null when scope === "baseline"
@@ -348,7 +351,9 @@ finding can be pointed at exactly the commit it was found against.
                   skipped: null|"narrow-baseline-not-green"  // no canary was attempted for this scope
                 } ] | null,
                 durationMs,                           // summed across every canary this gate ran
-                detail, fromCache, measuredDurationMs }
+                detail,
+                skipped: null|"no-canary",            // "no-canary": `baseline --no-canary` attempted none
+                fromCache, measuredDurationMs }
   },                                                       // fromCache: true iff served from the gate cache rather
                                                            // than measured here. On a served record durationMs is 0
                                                            // and measuredDurationMs carries the original cost; on a
@@ -365,10 +370,14 @@ finding can be pointed at exactly the commit it was found against.
   gateCache: { status: "hit"|"miss"|"bypassed",
                key: string|null, file: string|null,   // both null on a FORCED MISS -- a tree no key can describe
                measuredAt: string|null, measuredSha: string|null,   // provenance; non-null only on a hit
+               canaryMeasuredAt: string|null,      // when the entry's canary was measured: equal to measuredAt
+                                                   // when measured with the baseline, later when a hit filled
+                                                   // the slot, null when the entry carries no canary
                lookupMs,                                            // the cache's OWN cost, not a measured command
                wrote: boolean, writeSkipped: string|null,           // why no entry was written, when none was
-               canaryServed: boolean               // a hit always serves the baseline; it serves the canary only
+               canaryServed: boolean,              // a hit always serves the baseline; it serves the canary only
                                                    // when the entry carries one (never at narrow scope)
+               filledCanary: boolean               // this hit filled the entry's empty canary slot
              } | null,                              // null until the key is computed -- a run that stopped at
                                                     // clean-tree, base-diff or the canary prerequisite has none
   results: [ {
@@ -572,9 +581,18 @@ it is persisted and reused against a tree that has not changed.
 **NARROW-SCOPE CANARIES ARE NEVER CACHED, BY DESIGN — on the serve side as well as the write side.**
 
 - *Write:* `gates.canary` is written to the entry only when the canary ran at `scope: "baseline"`;
-  otherwise the entry records `canary: null` — present, so a reader can tell it from an entry written
-  before the field existed, and legal, so it is served as "the baseline is yours, measure the canary
-  here".
+  otherwise — narrow or mixed scope, or skipped by `baseline --no-canary` — the entry records
+  `canary: null` — present, so a reader can tell it from an entry written before the field existed,
+  and legal, so it is served as "the baseline is yours, measure the canary here".
+- *Fill:* a **hit** on an entry whose `canary` is `null` writes the canary this invocation measured
+  into that entry — once — when `canaryToFill` (`lib/runner.mjs`) accepts it: the stored slot is
+  `null` (a stored canary is **never overwritten**), and the canary is present, `fromCache: false`,
+  not skipped, `scope: "baseline"` and `status: "KILLED"`. A narrow, mixed, failed,
+  `not-established` or partial canary is never filled. The fill obeys the same four write conditions
+  below, writes to the same Phase-A key the entry was read under, carries `keyInputs`, `measuredAt`,
+  `measuredSha` and the baseline record over verbatim, stamps `canaryMeasuredAt`, and sets
+  `gateCache.wrote` and `gateCache.filledCanary`. So a whole-suite canary is paid at most once per
+  key, including after `baseline --no-canary`.
 - *Serve:* a cached canary is served **only when no pending mutant needs narrow attestation**
   (`needsNarrowCanary`, the same predicate the gate partitions on). `mutate.mjs baseline` files a
   perfectly legitimate baseline-scope canary against a tree; serving it to a later `run` on that same
@@ -592,10 +610,12 @@ promoted to `passed`) and labelled `fromCache: true` on the record, in `--json` 
 gate line. `gateCache.canaryServed` says whether the canary half was served, and the top-of-report
 banner has two forms because of it:
 
-- **both served** — `GATES FROM CACHE -- baseline and canary were measured <ts> …`;
+- **both served** — `GATES FROM CACHE -- baseline and canary were measured <ts> …`, or, when a hit
+  filled the canary slot after the baseline was measured (`canaryMeasuredAt` differs from
+  `measuredAt`), `GATES FROM CACHE -- the baseline was measured <ts> and the canary <ts> …`;
 - **baseline only** — `BASELINE FROM CACHE -- … The canary was measured HERE: a narrow-scope canary
-  attests about commands derived from the mutant catalog, which the cache key deliberately does not
-  cover, so it is never cached.`
+  is never cached, and an entry from `baseline --no-canary` carries none.`, or, when this invocation
+  skipped the canary, `… No canary was measured here (--no-canary).`
 
 A resumed run's `RESUMED` banner names the same three states, so the two banners can never
 contradict each other.
@@ -672,13 +692,14 @@ consequences of writing only at the end: a run killed mid-mutation writes **noth
 gates next time — the correct trade), and a tree carrying crash residue can never be served a clean
 gate, because the digest is over worktree bytes.
 
-The entry's `schemaVersion` is **2**: it identifies the entry SHAPE, which gained a nullable
-`gates.canary`, where `harnessFingerprint` identifies the harness. Conflating the two is how one of
+The entry's `schemaVersion` is **3**: it identifies the entry SHAPE, which gained a nullable
+`gates.canary` and then `canaryMeasuredAt`, where `harnessFingerprint` identifies the harness. Conflating the two is how one of
 them silently stops being maintained.
 
 A malformed **or unreadable** entry — bad JSON, an `EACCES` on the file, wrong `schemaVersion`, a
-`key` that disagrees with its filename, the baseline record missing, or the `canary` **key** absent
-(as against present-and-null, which is legal) — is a **logged miss** on stderr,
+`key` that disagrees with its filename, the baseline record missing, the `canary` **key** absent
+(as against present-and-null, which is legal), or the `canaryMeasuredAt` key absent — is a
+**logged miss** on stderr,
 not a throw: the gates are re-measured and the entry overwritten. A crafted entry can therefore never
 deny a run. `keyInputs` is recorded inside the entry so an operator can diff two entries and
 see why one missed; it is never read back as an authority, because the filename is the key.
@@ -686,7 +707,8 @@ see why one missed; it is never read back as an authority, because the filename 
 **`--remeasure-gates`** (`baseline`, `run`, `probe`; a usage error elsewhere) skips the lookup,
 measures both gates, and **writes the fresh result over the entry for this key**. The write half is
 what makes it the in-band correction path for an entry that key-matches but was measured under
-changed un-keyed state.
+changed un-keyed state. `baseline --remeasure-gates --no-canary` overwrites the entry with
+`canary: null`.
 
 ## Exit codes
 

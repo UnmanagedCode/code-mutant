@@ -79,7 +79,7 @@ search for the runner.
    ran it in this project — name the command and what it produced, or don't make the claim.
 7. Add `.mutation/` to this project's `.gitignore` (per the workspace git-hygiene convention —
    verify the pattern actually matches via `git status` before the first commit that touches it).
-8. **Verify by running it before you finish.** `mutate.mjs baseline`, invoked as above, must report the
+8. **Verify by running it before you finish.** `mutate.mjs baseline` (without `--no-canary`), invoked as above, must report the
    baseline `passed` **and** the canary `KILLED`; the one exception is an `exit-code`-grade harness,
    which has no named test to inject and reports `not-established`. Files existing is not "done" —
    fix `config.json` (or the parser) until the gates read that way, and record the numbers in the

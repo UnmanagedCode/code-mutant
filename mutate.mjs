@@ -36,7 +36,7 @@ const HELP = `code-mutant -- mutation-verified coverage proving
 
 USAGE
   node mutate.mjs baseline                    [--copy|--in-place] [--allow-dirty]
-                                              [--remeasure-gates] [--json]
+                                              [--remeasure-gates] [--no-canary] [--json]
   node mutate.mjs run [--id <id> ...] [--all] [--learn] [--copy|--in-place] [--jobs N]
                       [--base <branch>] [--allow-dirty] [--resume] [--remeasure-gates] [--json]
   node mutate.mjs validate                    [--json]
@@ -54,8 +54,11 @@ COMMANDS
                isolation mode (pass/fail/skip counts) and synthesises a canary
                against it -- with no mutants there is no narrowed command to
                judge anything, so this canary is always baseline-scope (and, at
-               that scope alone, cacheable). Nothing else is trustworthy until
-               this is green and the canary comes back KILLED.
+               that scope alone, cacheable). --no-canary skips the canary and
+               reports it NOT-ESTABLISHED, for a baseline taken to warm the gate
+               cache before run. Nothing else is trustworthy until this is green
+               and the canary comes back KILLED -- here, or with --no-canary, in
+               the run that grades.
   run          Run catalog mutants from .mutation/mutants.json. Per mutant:
                resolve site(s) -> refuse an ambiguous or no-op edit -> measure the
                narrow scope unmutated -> apply -> run -> classify -> restore.
@@ -120,6 +123,12 @@ FLAGS
                      key matches but something outside the key changed -- a
                      fresh npm install, an
                      edited .env, any gitignored state the suite reads.
+  --no-canary        baseline only: attempt no canary and report it
+                     NOT-ESTABLISHED (never passed). The cache entry is written
+                     with no canary; a later run that measures a fresh KILLED
+                     baseline-scope canary against the same key fills that slot
+                     once. A usage error on every other command, since each run
+                     and probe establishes its own canary at the scope it grades.
   --file <path>      probe: file to mutate.
   --anchor <text>    probe: exact substring to replace; must match exactly once.
   --replace <text>   probe: replacement text; must differ from the anchor.
@@ -248,7 +257,10 @@ TRUST GATES
   outcome verbatim -- nothing is promoted to passed. Any of those inputs
   differing is a miss. A NARROW-SCOPE canary is never cached, by design: it
   attests about commands derived from the mutant catalog, which the key
-  deliberately does not cover. Gitignored state
+  deliberately does not cover. An entry with no canary (a narrow run, or
+  baseline --no-canary) has that slot filled, once, by a later run on the same
+  key that measured a fresh KILLED baseline-scope canary; a stored canary is
+  never overwritten. Gitignored state
   the suite reads (node_modules, a .env, a local DB) is NOT in the key:
   --remeasure-gates is the correction path. Full contract: mutants.schema.md.
 
@@ -272,7 +284,7 @@ The catalog format is specified in mutants.schema.md, which also documents the
 
 const BOOLEAN_FLAGS = new Set([
   '--all', '--copy', '--in-place', '--json', '--help', '-h', '--allow-dirty', '--learn', '--resume',
-  '--remeasure-gates',
+  '--remeasure-gates', '--no-canary',
 ]);
 const REPEATABLE_FLAGS = new Set(['--id', '--expect-fail', '--expect-pass']);
 const VALUE_FLAGS = new Set([
@@ -311,6 +323,7 @@ export function parseArgs(argv) {
 }
 
 const REMEASURE_OUT_OF_SCOPE = '--remeasure-gates only applies to `baseline`, `run` and `probe` -- the commands that run the gates (try --help)';
+const NO_CANARY_OUT_OF_SCOPE = '--no-canary only applies to `baseline` -- every `run` and `probe` establishes its own canary at the scope it grades (try --help)';
 
 function isolationOverride(flags) {
   if (flags['--copy'] && flags['--in-place']) {
@@ -326,7 +339,7 @@ function runId() {
 }
 
 async function buildContext(flags, log, {
-  allowBaseOverride = false, allowLearn = false, allowRemeasure = false,
+  allowBaseOverride = false, allowLearn = false, allowRemeasure = false, allowNoCanary = false,
 } = {}) {
   const repoRoot = findRepoRoot(process.cwd());
   const jobsFlag = flags['--jobs'] === undefined ? undefined : Number(flags['--jobs']);
@@ -341,6 +354,9 @@ async function buildContext(flags, log, {
   }
   if (!allowRemeasure && flags['--remeasure-gates']) {
     throw new Error(REMEASURE_OUT_OF_SCOPE);
+  }
+  if (!allowNoCanary && flags['--no-canary']) {
+    throw new Error(NO_CANARY_OUT_OF_SCOPE);
   }
   const config = loadConfig({
     repoRoot,
@@ -371,7 +387,7 @@ function emit(report, flags) {
 }
 
 async function commandBaseline(flags, log) {
-  const { config, adapter } = await buildContext(flags, log, { allowRemeasure: true });
+  const { config, adapter } = await buildContext(flags, log, { allowRemeasure: true, allowNoCanary: true });
   // Both gates and nothing else: `execute` with an empty mutant list runs the
   // baseline measurement and the canary, which is what the reviewer's gate step
   // needs to see in one command. The clean-tree check runs here too (a baseline
@@ -385,6 +401,7 @@ async function commandBaseline(flags, log) {
     log,
     allowDirty: Boolean(flags['--allow-dirty']),
     remeasureGates: Boolean(flags['--remeasure-gates']),
+    skipCanary: Boolean(flags['--no-canary']),
   });
   report.command = 'baseline';
   return emit(report, flags);
@@ -597,6 +614,9 @@ async function commandCandidates(flags, log) {
   // runs no gate, so there is no measurement for the flag to force.
   if (flags['--remeasure-gates']) {
     throw new Error(REMEASURE_OUT_OF_SCOPE);
+  }
+  if (flags['--no-canary']) {
+    throw new Error(NO_CANARY_OUT_OF_SCOPE);
   }
   // `--base` alone keeps working in a repo with no harness at all, which is why
   // config is only consulted when the flag is absent -- but when it is absent,
