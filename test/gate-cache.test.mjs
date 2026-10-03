@@ -1086,7 +1086,11 @@ describe('baseline --no-canary and the canary-slot fill', () => {
       assert.ok(counter.wholeSuite() >= 1, 'the canary really ran the whole suite here');
       assert.match(run.stderr, /filled this entry's empty canary slot/);
 
-      // KEY IDENTITY: one entry, the same file, filed under the key it was read by.
+      // KEY IDENTITY is pinned by the single entry under the SAME filename: a fill
+      // filed under any other key would add a second file beside it. The
+      // gateCacheKey round trip below cannot tell the Phase-A key from one
+      // recomputed at write time -- a hit means the tree is identical -- so it
+      // only pins that the entry's recorded inputs still derive its own key.
       assert.deepEqual(gateEntries(repo), [file]);
       const entry = readGateEntryFile(repo, file);
       for (const field of ['key', 'keyInputs', 'measuredAt', 'measuredSha']) {
@@ -1166,10 +1170,52 @@ describe('baseline --no-canary and the canary-slot fill', () => {
 
       const run = await runJson(repo, ['run', '--all', '--json']);
       assert.equal(run.exitCode, 0, run.stderr);
+      // A HIT, or this proves nothing about the fill: a miss also files a mixed
+      // canary as null, without ever reaching the fill decision.
+      assert.equal(run.report.gateCache.status, 'hit', 'the run must reach the fill decision');
       assert.equal(run.report.gates.canary.scope, 'mixed');
       assert.equal(run.report.gates.canary.status, CanaryStatus.KILLED, run.report.gates.canary.detail);
       assert.equal(run.report.gateCache.filledCanary, false);
+      assert.equal(run.report.gateCache.wrote, false);
       const [file] = gateEntries(repo);
+      assert.equal(readGateEntryFile(repo, file).gates.canary, null);
+    } finally { repo.cleanup(); }
+  });
+
+  test('C10: a fill obeys the existing write guards, checked before it writes', async () => {
+    // Pins: a hit that measured a fillable canary still writes nothing when the
+    // run did not prove it left no trace. no-trace is the one guard reachable on
+    // a hit -- --allow-dirty and an unignored .mutation/ both move the tree digest
+    // and force a miss. The residue is switched on by an env var, which is not in
+    // the key, so the `baseline` that seeds the entry and the `run` share one key.
+    const repo = makeRepo({
+      files: guardFiles(),
+      config: countingConfig({
+        baselineCommand: `node ${JSON.stringify(COUNTING)}; status=$?; `
+          + 'if [ -n "$CM_LEAVE_RESIDUE" ]; then echo leaked > leaked-by-suite.txt; fi; exit $status',
+      }),
+      label: 'nc-fill-guard',
+    });
+    try {
+      writeCatalog(repo, [UNNARROWABLE]);
+      const warm = await runJson(repo, ['baseline', '--no-canary', '--json']);
+      assert.equal(warm.exitCode, 0, warm.stderr);
+      const [file] = gateEntries(repo);
+      assert.equal(readGateEntryFile(repo, file).gates.canary, null);
+
+      const run = await runJson(repo, ['run', '--all', '--json'], { CM_LEAVE_RESIDUE: '1' });
+      assert.ok(run.report, run.stderr);
+      // The fill's other conditions all hold, so only the guard can be stopping it.
+      assert.equal(run.report.gateCache.status, 'hit');
+      assert.equal(run.report.gates.canary.scope, 'baseline');
+      assert.equal(run.report.gates.canary.status, CanaryStatus.KILLED, run.report.gates.canary.detail);
+      assert.equal(run.report.gates.canary.fromCache, false);
+      assert.equal(run.report.noTrace.ok, false, 'the canary run must really have left residue');
+
+      assert.equal(run.report.gateCache.filledCanary, false);
+      assert.equal(run.report.gateCache.wrote, false);
+      assert.match(run.report.gateCache.writeSkipped, /did not prove it left no trace/);
+      assert.deepEqual(gateEntries(repo), [file]);
       assert.equal(readGateEntryFile(repo, file).gates.canary, null);
     } finally { repo.cleanup(); }
   });
