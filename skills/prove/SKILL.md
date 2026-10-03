@@ -33,9 +33,9 @@ owner-directed work from `scaffold/harness.md`) and never mutate by hand instead
 no saved-copy restore, no matter what a brief seems to sanction.
 
 Your own writes, whether catalog, patch file or log, stay in gitignored `.mutation/` or under
-`/tmp`; anything else you leave in the worktree trips the clean-tree gate. The one exception is the
-mutation itself: under `in-place` isolation it is applied to the worktree you share with the
-implementer and byte-restored after every mutant. A read-only brief doesn't stop you here.
+`/tmp`; elsewhere in the worktree, any write git doesn't ignore trips the clean-tree gate. The one
+exception is the mutation itself: under `in-place` isolation it is applied to the worktree you share
+with the implementer and byte-restored after every mutant. A read-only brief doesn't stop you here.
 
 ## 1. Enumerate claims
 
@@ -104,10 +104,12 @@ entry and `probe --id` re-runs a single existing entry under probe's relaxed gat
 
 Every re-run of the catalog is `run --all --resume` (plus `--learn` for a learn pass), whether after
 an interruption, after a catalog edit, or for the final matrix you report. It re-measures only
-mutants whose measured fields changed (`mutants.schema.md#resuming-a-run` lists them). Prose and
-`waived` edits re-measure nothing. Every reused verdict is labelled `fromJournal`. An unchanged
-mutant's `ERROR`, `TIMEOUT` or `IMPRECISE` is reused as-is too, so re-measure one you suspect was
-caused by load with `run --id <id>` without `--resume`. For exact command syntax,
+mutants whose measured fields changed (`mutants.schema.md#resuming-a-run` lists them), but reuses
+nothing after a new commit (the round after a refine) or a change to `config.json`'s measuring
+settings. Prose and `waived` edits re-measure nothing. Every reused verdict is labelled
+`fromJournal`. An unchanged mutant's `ERROR`, `TIMEOUT` or `IMPRECISE` is reused as-is too, so
+re-measure one you suspect was caused by load with `run --id <id>` without `--resume`. For exact
+command syntax,
 `mutate.mjs --help` or the project's `harness/mutation/README.md` is authoritative.
 
 ## 7. Interpret

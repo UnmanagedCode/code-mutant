@@ -515,10 +515,12 @@ journals nothing, because a non-reproducible verdict must never become a resumab
 failure (stale anchor, unparseable patch) cost no measured command and is free to recompute.
 Ungraded Phase-B results are journalled too, such as a `TIMEOUT` or an `ERROR` like
 `scope-timed-out`, so resume reuses them on an unchanged mutant. `run --id <id>` without `--resume`
-re-measures one, and its new journal line supersedes the old. A `canary-not-established` refusal is
-never journalled: it belongs to that invocation's gate. A line
-is appended only after restore succeeded for that mutant, so a journalled verdict always implies its
-tree was restored and proved.
+re-measures one, and its new journal line supersedes the old. The canary gate's
+`canary-not-established` refusal is never journalled: it belongs to that invocation's gate (an
+exit-code mutant's own canary `ERROR` is an ordinary result, and is). A line is appended only once
+the mutant's run returned, so a journalled result that applied a mutation always implies its tree
+was restored and proved; one that stopped before applying (a `scope-*` `ERROR`, say) carries no such
+proof.
 
 **`<key>` covers** `mutatedSha`, the adapter (`name`/`grade`/`modulePath`), `isolation`, `jobs`,
 `learn`, and a config fingerprint over `baselineCommand`, `testCommand`, `runner`, `timeoutMs`,
