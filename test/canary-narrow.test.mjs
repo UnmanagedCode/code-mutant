@@ -26,7 +26,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadAdapter } from '../lib/adapters/index.mjs';
 import { loadConfig } from '../lib/config.mjs';
 import { Verdict } from '../lib/classify.mjs';
-import { narrowCanaryEligible } from '../lib/canary-gate.mjs';
+import { CANARY_SKIPPED, narrowCanaryEligible } from '../lib/canary-gate.mjs';
 import { CanaryStatus, GateOutcome } from '../lib/gates.mjs';
 import { ExitCode, exitCodeFor, formatReport } from '../lib/report.mjs';
 import { execute } from '../lib/runner.mjs';
@@ -645,5 +645,6 @@ describe('AC4: the documented vocabulary is complete', () => {
     for (const outcome of Object.values(GateOutcome)) {
       assert.ok(doc.includes(`"${outcome}"`), `mutants.schema.md does not name GateOutcome ${outcome}`);
     }
+    assert.ok(doc.includes(`"${CANARY_SKIPPED}"`), `mutants.schema.md does not name the canary skip ${CANARY_SKIPPED}`);
   });
 });

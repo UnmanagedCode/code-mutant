@@ -31,7 +31,9 @@ import { fileURLToPath } from 'node:url';
 
 import { loadAdapter } from '../lib/adapters/index.mjs';
 import { loadConfig } from '../lib/config.mjs';
-import { execute } from '../lib/runner.mjs';
+import { canaryToFill, execute } from '../lib/runner.mjs';
+import { CANARY_SKIPPED } from '../lib/canary-gate.mjs';
+import { CanaryStatus } from '../lib/gates.mjs';
 import { gateCacheKey, harnessFingerprint, treeDigest } from '../lib/gate-cache.mjs';
 import { formatReport } from '../lib/report.mjs';
 import { git, guardFiles, makeRepo, write } from './helpers/tmp-repo.mjs';
@@ -358,6 +360,10 @@ describe('gate cache', () => {
       const entry = readGateEntryFile(repo, file);
       assert.ok(entry.gates.canary, 'a baseline-scope canary is written');
       assert.equal(entry.gates.canary.scope, 'baseline');
+      // C7: the default path is untouched by --no-canary. A canary measured with
+      // the baseline shares its timestamp, and is no skip.
+      assert.equal(first.report.gates.canary.skipped, null);
+      assert.equal(entry.canaryMeasuredAt, entry.measuredAt);
 
       counter.reset();
       const second = await runJson(repo, ['baseline', '--json'], counter.env);
@@ -813,6 +819,8 @@ describe('gate cache', () => {
       const [file] = gateEntries(repo);
       const entry = readGateEntryFile(repo, file);
       const abs = path.join(repo.root, '.mutation', 'gates', file);
+      const withoutCanaryMeasuredAt = { ...entry };
+      delete withoutCanaryMeasuredAt.canaryMeasuredAt;
 
       for (const [why, corrupt] of [
         ['not JSON', 'not json at all\n'],
@@ -820,6 +828,9 @@ describe('gate cache', () => {
         ['wrong schemaVersion', `${JSON.stringify({ ...entry, schemaVersion: 99 })}\n`],
         ['key mismatch', `${JSON.stringify({ ...entry, key: 'deadbeef'.repeat(4) })}\n`],
         ['missing a gate record', `${JSON.stringify({ ...entry, gates: { baseline: entry.gates.baseline } })}\n`],
+        // An entry that cannot say when its canary was measured cannot be told
+        // apart from one written before a filled slot was possible.
+        ['missing canaryMeasuredAt', `${JSON.stringify(withoutCanaryMeasuredAt)}\n`],
       ]) {
         if (corrupt === null) {
           // A crafted entry must not be able to DENY the run: an unreadable file
@@ -916,6 +927,285 @@ describe('gate cache', () => {
         assert.equal(result.exitCode, 4, `${command}: ${result.stderr}`);
         assert.match(result.stderr, /--remeasure-gates/, command);
       }
+    } finally { repo.cleanup(); }
+  });
+});
+
+// `baseline --no-canary` exists so a baseline taken only to warm the cache does
+// not pay a whole-suite canary that every narrowed `run` then refuses anyway. The
+// fill exists so that skip cannot cost more than it saves: without it, every
+// later run that cannot narrow would re-pay a whole-suite canary each invocation.
+describe('baseline --no-canary and the canary-slot fill', () => {
+  // The N5 shape: a per-mutant narrowCommand is mode `command`, never narrow-
+  // canary-eligible, so a run of this mutant alone is judged at baseline scope.
+  const UNNARROWABLE = {
+    ...MUTANT,
+    id: 'guard-ollama-cmd',
+    narrowCommand: `node ${JSON.stringify(COUNTING)} 'test/guard.test.mjs'`,
+  };
+
+  function entryBytes(repo, file) {
+    return readFileSync(path.join(repo.root, '.mutation', 'gates', file), 'utf8');
+  }
+
+  // A fresh, attesting, baseline-scope canary: the one shape canaryToFill accepts.
+  const FRESH_KILLED = Object.freeze({
+    outcome: 'passed',
+    status: CanaryStatus.KILLED,
+    scope: 'baseline',
+    grade: 'counted',
+    command: 'node --test',
+    target: 'test/guard.test.mjs',
+    attempts: [],
+    scopes: null,
+    durationMs: 12,
+    detail: 'fired',
+    skipped: null,
+    fromCache: false,
+    measuredDurationMs: null,
+  });
+
+  test('C1: --no-canary runs the baseline alone and reports the canary not-established', async () => {
+    // Pins: the skip measures no canary, never reads as one that passed, and files
+    // an empty canary slot rather than a record that attests nothing.
+    const counter = makeCounter();
+    const control = makeCounter();
+    const repo = makeRepo({ files: guardFiles(), config: countingConfig(), label: 'nc-skip' });
+    const other = makeRepo({ files: guardFiles(), config: countingConfig(), label: 'nc-skip-control' });
+    try {
+      const skipped = await runJson(repo, ['baseline', '--no-canary', '--json'], counter.env);
+      assert.equal(skipped.exitCode, 0, skipped.stderr);
+      const { canary } = skipped.report.gates;
+      assert.equal(canary.outcome, 'not-established');
+      assert.equal(canary.status, 'NOT-ESTABLISHED');
+      assert.equal(canary.skipped, CANARY_SKIPPED);
+      assert.equal(canary.scope, null);
+      assert.equal(canary.command, null);
+      assert.equal(canary.durationMs, 0);
+      assert.equal(canary.fromCache, false);
+      assert.equal(counter.wholeSuite(), 1, `the baseline alone: ${JSON.stringify(counter.entries())}`);
+
+      // CONTROL: the same fixture without the flag runs a canary too, so the count
+      // above is the flag's doing and not a fixture whose canary never runs.
+      const plain = await runJson(other, ['baseline', '--json'], control.env);
+      assert.equal(plain.exitCode, 0, plain.stderr);
+      assert.ok(control.wholeSuite() >= 2, JSON.stringify(control.entries()));
+
+      const [file] = gateEntries(repo);
+      const entry = readGateEntryFile(repo, file);
+      assert.equal(entry.gates.canary, null, 'a skipped canary is filed as an empty slot');
+      assert.equal(entry.canaryMeasuredAt, null);
+
+      const text = formatReport(skipped.report);
+      assert.match(text, /canary {4}NOT-ESTABLISHED/);
+      assert.match(text, /CANARY SKIPPED/);
+      assert.doesNotMatch(text, /KILLED/);
+    } finally { repo.cleanup(); other.cleanup(); counter.cleanup(); control.cleanup(); }
+  });
+
+  test('C2: --no-canary on a warm entry serves the baseline, not the stored canary, and writes nothing', async () => {
+    // Pins: the skip claims no more than it asked for even when a canary is
+    // available to serve, and a hit with a skipped canary leaves the entry alone.
+    const counter = makeCounter();
+    const repo = makeRepo({ files: guardFiles(), config: countingConfig(), label: 'nc-warm' });
+    try {
+      const seeded = await runJson(repo, ['baseline', '--json'], counter.env);
+      assert.equal(seeded.exitCode, 0, seeded.stderr);
+      const [file] = gateEntries(repo);
+      const before = entryBytes(repo, file);
+      assert.ok(readGateEntryFile(repo, file).gates.canary, 'the entry carries a canary to be tempted by');
+
+      counter.reset();
+      const skipped = await runJson(repo, ['baseline', '--no-canary', '--json'], counter.env);
+      assert.equal(skipped.exitCode, 0, skipped.stderr);
+      assert.equal(skipped.report.gateCache.status, 'hit');
+      assert.equal(skipped.report.gateCache.canaryServed, false);
+      assert.equal(skipped.report.gates.canary.skipped, CANARY_SKIPPED);
+      assert.equal(skipped.report.gates.canary.outcome, 'not-established');
+      assert.equal(counter.wholeSuite(), 0, JSON.stringify(counter.entries()));
+      assert.equal(entryBytes(repo, file), before, 'the entry must be byte-identical');
+
+      const text = formatReport(skipped.report);
+      assert.match(text, /BASELINE FROM CACHE/);
+      assert.match(text, /No canary was measured here/);
+      assert.doesNotMatch(text, /The canary was measured HERE/);
+      assert.doesNotMatch(text, /gatesMs covers the canary only/);
+    } finally { repo.cleanup(); counter.cleanup(); }
+  });
+
+  test('C3: a narrowed run after --no-canary establishes its own narrow canary and fills nothing', async () => {
+    // Pins: an empty slot is never served as a canary, the narrowed run still
+    // attests its judging command, and a narrow canary never lands in the cache.
+    const counter = makeCounter();
+    const repo = makeRepo({ files: guardFiles(), config: countingConfig(), label: 'nc-narrow' });
+    try {
+      writeCatalog(repo, [MUTANT]);
+      const warm = await runJson(repo, ['baseline', '--no-canary', '--json'], counter.env);
+      assert.equal(warm.exitCode, 0, warm.stderr);
+
+      counter.reset();
+      const run = await runJson(repo, ['run', '--all', '--json'], counter.env);
+      assert.equal(run.exitCode, 0, run.stderr);
+      assert.equal(run.report.gateCache.status, 'hit');
+      assert.equal(run.report.gates.canary.scope, 'narrow');
+      assert.equal(run.report.gates.canary.fromCache, false);
+      assert.equal(run.report.gateCache.filledCanary, false);
+      assert.equal(counter.wholeSuite(), 0, JSON.stringify(counter.entries()));
+      const narrow = counter.entries().filter((e) => e.args.length > 0);
+      assert.equal(narrow.length, 3, `expected narrow baseline + canary + mutant: ${JSON.stringify(narrow)}`);
+
+      const [file] = gateEntries(repo);
+      assert.equal(readGateEntryFile(repo, file).gates.canary, null);
+    } finally { repo.cleanup(); counter.cleanup(); }
+  });
+
+  test('C4: an unnarrowable run fills the empty slot under the same key, and the next run is served it', async () => {
+    // Pins: the fill writes the canary it measured into the very entry it hit --
+    // same file, same key, every other field carried over verbatim -- and the
+    // canary is then paid at most once per key.
+    const counter = makeCounter();
+    const repo = makeRepo({ files: guardFiles(), config: countingConfig(), label: 'nc-fill' });
+    try {
+      writeCatalog(repo, [UNNARROWABLE]);
+      const warm = await runJson(repo, ['baseline', '--no-canary', '--json'], counter.env);
+      assert.equal(warm.exitCode, 0, warm.stderr);
+      const [file] = gateEntries(repo);
+      const snapshot = readGateEntryFile(repo, file);
+      assert.equal(snapshot.gates.canary, null);
+
+      counter.reset();
+      const run = await runJson(repo, ['run', '--all', '--json'], counter.env);
+      assert.equal(run.exitCode, 0, run.stderr);
+      const { canary } = run.report.gates;
+      assert.equal(run.report.gateCache.status, 'hit');
+      assert.equal(canary.scope, 'baseline');
+      assert.equal(canary.status, CanaryStatus.KILLED, canary.detail);
+      assert.equal(canary.fromCache, false);
+      assert.equal(run.report.gateCache.wrote, true);
+      assert.equal(run.report.gateCache.filledCanary, true);
+      assert.ok(counter.wholeSuite() >= 1, 'the canary really ran the whole suite here');
+      assert.match(run.stderr, /filled this entry's empty canary slot/);
+
+      // KEY IDENTITY: one entry, the same file, filed under the key it was read by.
+      assert.deepEqual(gateEntries(repo), [file]);
+      const entry = readGateEntryFile(repo, file);
+      for (const field of ['key', 'keyInputs', 'measuredAt', 'measuredSha']) {
+        assert.deepEqual(entry[field], snapshot[field], `${field} must be carried over verbatim`);
+      }
+      assert.deepEqual(entry.gates.baseline, snapshot.gates.baseline);
+      assert.equal(gateCacheKey(entry.keyInputs), entry.key);
+      assert.equal(entry.key, run.report.gateCache.key);
+      assert.equal(`${entry.key}.json`, file);
+      assert.deepEqual(entry.gates.canary, canary, 'the stored canary is the one this run measured');
+      assert.equal(typeof entry.canaryMeasuredAt, 'string');
+      assert.notEqual(entry.canaryMeasuredAt, entry.measuredAt);
+
+      counter.reset();
+      const again = await runJson(repo, ['run', '--all', '--json'], counter.env);
+      assert.equal(again.exitCode, 0, again.stderr);
+      assert.equal(again.report.gates.canary.fromCache, true);
+      assert.equal(again.report.gateCache.canaryServed, true);
+      assert.equal(again.report.gateCache.filledCanary, false);
+      assert.equal(counter.wholeSuite(), 0, JSON.stringify(counter.entries()));
+      const text = formatReport(again.report);
+      assert.match(text, /GATES FROM CACHE/);
+      assert.ok(text.includes(`the baseline was measured ${entry.measuredAt} and the canary ${entry.canaryMeasuredAt}`), text);
+    } finally { repo.cleanup(); counter.cleanup(); }
+  });
+
+  test('C5: a stored canary is never overwritten', async () => {
+    // Pins: the fill only ever writes into an EMPTY slot. A served canary is not
+    // re-filed, and a fresh one is refused over a stored one.
+    const counter = makeCounter();
+    const repo = makeRepo({ files: guardFiles(), config: countingConfig(), label: 'nc-no-overwrite' });
+    try {
+      writeCatalog(repo, [UNNARROWABLE]);
+      const seeded = await runJson(repo, ['baseline', '--json'], counter.env);
+      assert.equal(seeded.exitCode, 0, seeded.stderr);
+      const [file] = gateEntries(repo);
+      const before = entryBytes(repo, file);
+      assert.ok(readGateEntryFile(repo, file).gates.canary);
+
+      const run = await runJson(repo, ['run', '--all', '--json'], counter.env);
+      assert.equal(run.exitCode, 0, run.stderr);
+      assert.equal(run.report.gates.canary.fromCache, true);
+      assert.equal(run.report.gateCache.filledCanary, false);
+      assert.equal(entryBytes(repo, file), before, 'the entry must be byte-identical');
+    } finally { repo.cleanup(); counter.cleanup(); }
+
+    assert.equal(canaryToFill({ cachedCanary: { ...FRESH_KILLED }, canary: { ...FRESH_KILLED } }), null);
+  });
+
+  test('C6: canaryToFill refuses every canary that is not fresh, baseline-scope and KILLED', () => {
+    // Pins: each condition alone refuses. The positive control is what keeps the
+    // table from passing against a function that refuses everything.
+    assert.equal(canaryToFill({ cachedCanary: null, canary: FRESH_KILLED }), FRESH_KILLED);
+    for (const [why, canary] of [
+      ['FAILED', { ...FRESH_KILLED, outcome: 'failed', status: CanaryStatus.FAILED }],
+      ['NOT-ESTABLISHED', { ...FRESH_KILLED, outcome: 'not-established', status: CanaryStatus.NOT_ESTABLISHED }],
+      ['PARTIAL', { ...FRESH_KILLED, outcome: 'partial', status: CanaryStatus.PARTIAL }],
+      ['narrow scope', { ...FRESH_KILLED, scope: 'narrow' }],
+      ['mixed scope', { ...FRESH_KILLED, scope: 'mixed' }],
+      ['null scope', { ...FRESH_KILLED, scope: null }],
+      ['served from cache', { ...FRESH_KILLED, fromCache: true }],
+      ['skipped', { ...FRESH_KILLED, skipped: CANARY_SKIPPED }],
+      ['absent', undefined],
+    ]) {
+      assert.equal(canaryToFill({ cachedCanary: null, canary }), null, why);
+    }
+  });
+
+  test('C6: a mixed-scope run after --no-canary leaves the slot empty', async () => {
+    // Pins, through the runner: a canary with a narrow half is derived from the
+    // catalog, so a fresh KILLED one is still never filed.
+    const repo = makeRepo({ files: guardFiles(), config: countingConfig(), label: 'nc-mixed' });
+    try {
+      writeCatalog(repo, [MUTANT, UNNARROWABLE]);
+      const warm = await runJson(repo, ['baseline', '--no-canary', '--json']);
+      assert.equal(warm.exitCode, 0, warm.stderr);
+
+      const run = await runJson(repo, ['run', '--all', '--json']);
+      assert.equal(run.exitCode, 0, run.stderr);
+      assert.equal(run.report.gates.canary.scope, 'mixed');
+      assert.equal(run.report.gates.canary.status, CanaryStatus.KILLED, run.report.gates.canary.detail);
+      assert.equal(run.report.gateCache.filledCanary, false);
+      const [file] = gateEntries(repo);
+      assert.equal(readGateEntryFile(repo, file).gates.canary, null);
+    } finally { repo.cleanup(); }
+  });
+
+  test('C8: --no-canary is a usage error everywhere but baseline, before any command runs', async () => {
+    // Pins: a graded run or probe can never be asked to skip its canary from the
+    // command line, and the refusal costs nothing.
+    const counter = makeCounter();
+    const repo = makeRepo({ files: guardFiles(), config: countingConfig(), label: 'nc-flag-scope' });
+    try {
+      writeCatalog(repo, [MUTANT]);
+      for (const args of [
+        ['run', '--all', '--no-canary'],
+        ['probe', '--id', 'guard-ollama', '--no-canary'],
+        ['validate', '--no-canary'],
+        ['candidates', '--no-canary'],
+      ]) {
+        const result = await runJson(repo, args, counter.env);
+        assert.equal(result.exitCode, 4, `${args[0]}: ${result.stderr}`);
+        assert.match(result.stderr, /--no-canary/, args[0]);
+      }
+      assert.deepEqual(counter.entries(), [], 'no command may run before the refusal');
+    } finally { repo.cleanup(); counter.cleanup(); }
+  });
+
+  test('C9: the runner refuses to skip the canary of a run that has mutants', async () => {
+    // Pins the invariant below the CLI: no caller can produce graded verdicts
+    // beside a skipped canary.
+    const repo = makeRepo({ files: guardFiles(), config: countingConfig(), label: 'nc-invariant' });
+    try {
+      const config = loadConfig({ repoRoot: repo.root });
+      const adapter = await loadAdapter(config.runner, { configDir: config.configDir });
+      await assert.rejects(
+        execute({ config, adapter, mutants: [MUTANT], skipCanary: true }),
+        /baseline` only/,
+      );
     } finally { repo.cleanup(); }
   });
 });

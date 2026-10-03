@@ -45,11 +45,12 @@ never accept a claim as proven without mutating it yourself.
 
 ## 2. Gate
 
-Run `baseline` in the isolation mode `config.json` sets, and every mutant in that same mode — pass
+Run `baseline --no-canary` in the isolation mode `config.json` sets, and every mutant in that same mode — pass
 no `--copy`/`--in-place` of your own unless the project's `harness/mutation/README.md` directs it,
 since a mode the project didn't configure can fail its baseline gate outright. The harness is
-trustworthy for this run only when clean-tree and baseline both pass *and* the canary comes back
-`KILLED`; `run` additionally gates on empty-diff-vs-base. A canary reading `PARTIAL` is trustworthy
+trustworthy for a `run` only when clean-tree and baseline both pass *and* that run's own canary
+comes back `KILLED` — `--no-canary` leaves `baseline`'s canary `not-established`, since every `run`
+establishes its own; `run` additionally gates on empty-diff-vs-base. A canary reading `PARTIAL` is trustworthy
 for the scopes it names and for no others: the mutants judged by an unattested command come back
 `ERROR`/`canary-not-established` and are not findings, in either direction — fix that command before
 reading anything about them. A gate reading `not-established` did not
