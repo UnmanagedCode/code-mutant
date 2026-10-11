@@ -74,12 +74,16 @@ mutant covers yet.
 **It lists, you target** — round 1 the catalog is empty so the list is the whole diff; don't
 mutate one-per-hunk, that's an exhaustive sweep, not this practice. Select the hunks you judge
 invariant-bearing — the ones a test claims to pin.
+A purely presentational literal (a styling or layout value, a color, a class name used only for
+styling, user-facing wording) is not an invariant: skip it, and never report its survival, unless the
+plan or brief under review names that exact value as a requirement (a palette guard, a protocol- or
+parser-visible string, a class name other code selects on).
 
 ## 5. Author mutants
 
 One minimal mutant per claim from step 1, and per candidate you selected in step 4: the smallest
 edit that violates the invariant without breaking compilation, plus `whyNotEquivalent` stating why
-the change is genuinely behavior-changing, not equivalent. For a DI or provider seam, always mutate
+the change violates the invariant, not merely alters the output. For a DI or provider seam, always mutate
 **both directions** — under-firing (a missed wire silently disables the guard) and over-firing (a
 stale entry wedges the operation). Full per-entry format is specified in `code-mutant`'s
 `mutants.schema.md` — the catalog's authoritative schema. Seed each mutant's `expectFail` with the
