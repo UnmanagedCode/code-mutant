@@ -1,0 +1,8 @@
+{
+  "tool": "vitest",
+  "version": "vitest/5.0.5 linux-x64 node-v24.18.0",
+  "command": "node node_modules/vitest/vitest.mjs run --reporter=json --outputFile=/dev/stdout test/no-such-file.test.js",
+  "cwd": "/tmp/code-mutant-capture/vt",
+  "exitCode": 1,
+  "capturedBy": "test/fixtures/capture/capture.sh"
+}

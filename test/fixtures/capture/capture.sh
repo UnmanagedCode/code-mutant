@@ -5,10 +5,13 @@
 # toolchain. This script exists so their provenance is reproducible rather than
 # asserted. Run it when an adapter is added or a tool's output format changes:
 #
-#   RUN_REAL_CAPTURE=1 bash test/fixtures/capture/capture.sh
+#   RUN_REAL_CAPTURE=1 bash test/fixtures/capture/capture.sh [adapter ...]
 #
-# Needs network (pip / npm / NuGet) and a dotnet SDK. Whatever it cannot capture is
-# reported and left alone -- never replaced with a hand-written sample. An adapter
+# Naming adapters (node-test, pytest, vitest, dotnet) re-captures only those;
+# with none, every adapter is re-captured. Needs network (pip / NuGet), a dotnet
+# SDK, and for vitest this repo's own pinned devDependency (`npm ci` first).
+# Whatever it cannot capture is reported and left alone -- never replaced with a
+# hand-written sample. An adapter
 # whose parser was never proven against real output would contradict the premise of
 # this tool, which exists to stop unverified green claims.
 set -uo pipefail
@@ -30,14 +33,18 @@ capture() {
   local adapter=$1 case=$2 tool=$3 version=$4 dir=$5; shift 6   # shift past the literal --
   local out="$FIX/$adapter"
   mkdir -p "$out"
-  ( cd "$dir" && "$@" ) >"$out/$case.stdout.txt" 2>"$out/$case.stderr.txt"
-  local rc=$?
+  # stdout is a PIPE, as lib/exec.mjs gives every project command -- never a
+  # file: a runner writing its report to /dev/stdout would truncate a file and
+  # drop everything printed before the report.
+  ( cd "$dir" && "$@" ) 2>"$out/$case.stderr.txt" | cat >"$out/$case.stdout.txt"
+  local rc=${PIPESTATUS[0]}
   local cmd="$*"
   cat >"$out/$case.meta.json" <<EOF
 {
   "tool": "$tool",
   "version": "$version",
   "command": "${cmd//\"/\\\"}",
+  "cwd": "$dir",
   "exitCode": $rc,
   "capturedBy": "test/fixtures/capture/capture.sh"
 }
@@ -157,15 +164,20 @@ EOF
 }
 
 # -------------------------------------------------------------------- vitest
+# Uses THIS repo's pinned devDependency (package.json), never a fresh `npm i`, so
+# the fixtures come from the exact Vitest the suite's end-to-end tests drive.
+# Every case runs the JSON reporter onto stdout -- the only output the adapter
+# reads.
 capture_vitest() {
   echo "vitest:"
+  local repo; repo="$(cd "$FIX/../.." && pwd)"
+  local entry="$repo/node_modules/vitest/vitest.mjs"
+  if [ ! -f "$entry" ]; then SKIPPED+=("vitest: $entry missing -- run npm ci first"); return; fi
   local d="$WORK/vt"; mkdir -p "$d/test"
   printf '{"name":"vt-fixture","private":true,"type":"module"}\n' >"$d/package.json"
-  if ! ( cd "$d" && npm i -D vitest --no-audit --no-fund >/dev/null 2>&1 ); then
-    SKIPPED+=("vitest: npm i vitest failed (network?)"); return
-  fi
-  local vt="$d/node_modules/.bin/vitest"
-  local v; v="$("$vt" --version 2>&1 | head -1)"
+  ln -s "$repo/node_modules" "$d/node_modules"
+  local v; v="$(node "$entry" --version 2>&1 | head -1)"
+  local vt=(node node_modules/vitest/vitest.mjs run --reporter=json --outputFile=/dev/stdout)
 
   cat >"$d/test/math.test.js" <<'EOF'
 import { test, expect } from 'vitest';
@@ -173,7 +185,7 @@ import { test, expect } from 'vitest';
 test('adds', () => { expect(1 + 1).toBe(2); });
 test('subtracts', () => { expect(2 - 1).toBe(1); });
 EOF
-  capture vitest pass vitest "$v" "$d" -- "$vt" run --reporter=default
+  capture vitest pass vitest "$v" "$d" -- "${vt[@]}"
 
   cat >"$d/test/math.test.js" <<'EOF'
 import { test, describe, expect } from 'vitest';
@@ -184,7 +196,7 @@ describe('nested', () => {
   test('inner failure', () => { throw new Error('boom'); });
 });
 EOF
-  capture vitest fail vitest "$v" "$d" -- "$vt" run --reporter=default
+  capture vitest fail vitest "$v" "$d" -- "${vt[@]}"
 
   cat >"$d/test/math.test.js" <<'EOF'
 import { test, expect } from 'vitest';
@@ -193,13 +205,79 @@ test('adds', () => { expect(1 + 1).toBe(2); });
 test.skip('skipped for a reason', () => {});
 test.todo('todo item');
 EOF
-  capture vitest skip vitest "$v" "$d" -- "$vt" run --reporter=default
+  capture vitest skip vitest "$v" "$d" -- "${vt[@]}"
 
+  # A file that fails to transform, beside one that passes: the load failure
+  # must surface without hiding the passing file's counts.
   cat >"$d/test/math.test.js" <<'EOF'
+import { test, expect } from 'vitest';
+
+test('adds', () => { expect(1 + 1).toBe(2); });
+EOF
+  cat >"$d/test/broken.test.js" <<'EOF'
 import { test } from 'vitest';
 this is not valid javascript (
 EOF
-  capture vitest compile-error vitest "$v" "$d" -- "$vt" run --reporter=default
+  capture vitest compile-error vitest "$v" "$d" -- "${vt[@]}"
+  rm "$d/test/broken.test.js"
+
+  # Test-emitted stdout around the report: console output, a raw write with no
+  # trailing newline at module scope and in a test, and a decoy report prefix.
+  cat >"$d/test/math.test.js" <<'EOF'
+import { test, describe, expect } from 'vitest';
+
+console.log('module-scope console.log');
+console.error('module-scope console.error');
+process.stdout.write('module-scope-no-newline');
+
+test('adds', () => {
+  console.log('in-test console.log');
+  process.stdout.write('in-test-no-newline');
+  expect(1 + 1).toBe(2);
+});
+test('decoy', () => {
+  process.stdout.write('{"numTotalTestSuites":1}');
+  expect(true).toBe(true);
+});
+describe('nested', () => {
+  test('inner failure', () => { throw new Error('boom'); });
+});
+EOF
+  capture vitest console-noise vitest "$v" "$d" -- "${vt[@]}"
+
+  # A report far larger than a pipe buffer (64 KiB): 2000 tests with long
+  # titles, exactly one failing.
+  cat >"$d/test/math.test.js" <<'EOF'
+import { test, expect } from 'vitest';
+
+const pad = 'x'.repeat(110);
+for (let i = 0; i < 2000; i += 1) {
+  test(`generated ${String(i).padStart(4, '0')} ${pad}`, () => { expect(i < 0).toBe(false); });
+}
+test('the one failure', () => { expect(1).toBe(2); });
+EOF
+  capture vitest large vitest "$v" "$d" -- "${vt[@]}"
+
+  # A file filter matching no file: Vitest exits 1 with an empty report.
+  cat >"$d/test/math.test.js" <<'EOF'
+import { test, expect } from 'vitest';
+
+test('adds', () => { expect(1 + 1).toBe(2); });
+EOF
+  capture vitest no-files vitest "$v" "$d" -- "${vt[@]}" test/no-such-file.test.js
+
+  # An error thrown outside any test after it passed: every test passes and
+  # Vitest still exits 1.
+  cat >"$d/test/math.test.js" <<'EOF'
+import { test, expect } from 'vitest';
+
+test('adds', () => {
+  setTimeout(() => { throw new Error('thrown after the test passed'); }, 0);
+  expect(1 + 1).toBe(2);
+});
+test('waits', async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+EOF
+  capture vitest unhandled-error vitest "$v" "$d" -- "${vt[@]}"
 }
 
 # -------------------------------------------------------------------- dotnet
@@ -270,10 +348,17 @@ EOF
   capture dotnet compile-error dotnet "$v" "$p" -- dotnet test
 }
 
-capture_node_test
-capture_pytest
-capture_vitest
-capture_dotnet
+SECTIONS=("$@")
+[ ${#SECTIONS[@]} -eq 0 ] && SECTIONS=(node-test pytest vitest dotnet)
+for section in "${SECTIONS[@]}"; do
+  case "$section" in
+    node-test) capture_node_test ;;
+    pytest) capture_pytest ;;
+    vitest) capture_vitest ;;
+    dotnet) capture_dotnet ;;
+    *) echo "capture.sh: unknown adapter $section" >&2; exit 2 ;;
+  esac
+done
 
 echo
 if [ ${#SKIPPED[@]} -gt 0 ]; then
@@ -281,4 +366,4 @@ if [ ${#SKIPPED[@]} -gt 0 ]; then
   for s in "${SKIPPED[@]}"; do echo "  - $s"; done
   exit 1
 fi
-echo "all adapters captured from real runs"
+echo "captured from real runs: ${SECTIONS[*]}"

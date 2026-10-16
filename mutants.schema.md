@@ -85,7 +85,7 @@ each runner prints is the one a prover should write:
 |---|---|---|
 | `node-test` | `test/guard.test.mjs::allows ollama` — the **leaf** test name, as `node --test` prints it | the file |
 | `pytest` | `tests/test_math.py::TestGroup::test_inner` — a real pytest nodeid | the file |
-| `vitest` | `test/math.test.js::nested > inner failure` — the full nested name path, as vitest prints it | the file |
+| `vitest` | `test/math.test.js::nested > inner failure` — from the JSON report: the file relative to the repo root, then `ancestorTitles` and `title` joined with ` > `. A file that failed to load is the file alone. Requires `--reporter=json --outputFile=/dev/stdout` | the file |
 | `dotnet` | `proj.UnitTest1.Subtracts` — the fully-qualified name. **No file**, because `dotnet test` output carries none | the declaring type (`proj.UnitTest1`) |
 | `exit-code` | not used — there are no named tests | whole command |
 

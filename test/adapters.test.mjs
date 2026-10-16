@@ -15,6 +15,9 @@ import {
   AdapterError, SHIPPED_ADAPTERS, loadAdapter, missingCanaryExports,
 } from '../lib/adapters/index.mjs';
 import { stripAnsi } from '../lib/adapters/common.mjs';
+import { extractReport } from '../lib/adapters/vitest.mjs';
+import { Reason, Verdict, classify } from '../lib/classify.mjs';
+import { isGreen } from '../lib/measure.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, 'fixtures');
@@ -30,10 +33,12 @@ function fixture(adapter, name) {
   };
 }
 
+// `meta.cwd` is the directory the capture ran in -- the workspace root the
+// runner would pass, against which vitest's absolute paths are relativised.
 function parseFixture(adapterName, caseName) {
   const adapter = SHIPPED_ADAPTERS[adapterName];
   const { stdout, stderr, meta } = fixture(adapterName, caseName);
-  return { result: adapter.parse(stdout, stderr, meta.exitCode), meta };
+  return { result: adapter.parse(stdout, stderr, meta.exitCode, { cwd: meta.cwd }), meta };
 }
 
 // Every counted case across every shipped adapter, with the numbers the real run
@@ -67,12 +72,26 @@ const EXPECTATIONS = {
     pass: { passed: 2, failed: 0, skipped: 0, ran: 2, compileError: false, failedTests: [] },
     fail: {
       passed: 1, failed: 2, skipped: 0, ran: 3, compileError: false,
-      // vitest prints the full nested name path, so that is what a reviewer writes.
+      // ancestorTitles + title, joined ' > ': the nested path a reviewer writes.
       failedTests: ['test/math.test.js::subtracts', 'test/math.test.js::nested > inner failure'],
     },
     // skipped + todo are both non-signal outcomes and are counted together.
     skip: { passed: 1, failed: 0, skipped: 2, ran: 3, compileError: false, failedTests: [] },
-    'compile-error': { passed: 0, failed: 0, skipped: 0, ran: 0, compileError: true },
+    // The file that failed to transform is one file-level failure, named by the
+    // file alone; the passing file beside it still counts.
+    'compile-error': {
+      passed: 1, failed: 1, skipped: 0, ran: 2, compileError: true, failedTests: ['test/broken.test.js'],
+    },
+    'console-noise': {
+      passed: 2, failed: 1, skipped: 0, ran: 3, compileError: false,
+      failedTests: ['test/math.test.js::nested > inner failure'],
+    },
+    large: {
+      passed: 2000, failed: 1, skipped: 0, ran: 2001, compileError: false,
+      failedTests: ['test/math.test.js::the one failure'],
+    },
+    'no-files': { passed: 0, failed: 0, skipped: 0, ran: 0, compileError: false, failedTests: [] },
+    'unhandled-error': { passed: 2, failed: 0, skipped: 0, ran: 2, compileError: false, failedTests: [] },
   },
   dotnet: {
     pass: { passed: 2, failed: 0, skipped: 0, ran: 2, compileError: false, failedTests: [] },
@@ -114,6 +133,128 @@ for (const [adapterName, cases] of Object.entries(EXPECTATIONS)) {
     });
   });
 }
+
+describe('vitest JSON report on stdout', () => {
+  const vitest = SHIPPED_ADAPTERS.vitest;
+  const parseWith = (stdout, exitCode, cwd) => vitest.parse(stdout, '', exitCode, { cwd });
+
+  // Invariant: test-emitted stdout -- a raw write with no newline, a decoy report
+  // prefix -- cannot change the parsed report.
+  test('test-emitted stdout before the report cannot change it', () => {
+    const { stdout, meta } = fixture('vitest', 'console-noise');
+    assert.ok(stdout.startsWith('module-scope-no-newline'), 'the capture really carries leading noise');
+    assert.ok(stdout.includes('{"numTotalTestSuites":1}{"numTotalTestSuites":'), 'and the decoy, unterminated by a newline');
+    assert.ok(stdout.trimEnd().endsWith('JSON report written to /dev/stdout'), 'and the trailing logger line');
+    const noisy = parseWith(stdout, meta.exitCode, meta.cwd);
+    const clean = parseWith(stdout.slice(stdout.lastIndexOf('{"numTotalTestSuites":')), meta.exitCode, meta.cwd);
+    assert.deepEqual(noisy, clean);
+  });
+
+  // Invariant: a report larger than the pipe buffer parses intact.
+  test('a report far larger than a pipe buffer parses intact', () => {
+    const { stdout } = fixture('vitest', 'large');
+    assert.ok(Buffer.byteLength(stdout) > 65_536, `fixture is ${Buffer.byteLength(stdout)} bytes`);
+    const { result } = parseFixture('vitest', 'large');
+    assert.equal(result.diagnostic, null);
+    assert.equal(result.ran, 2001);
+  });
+
+  // Invariant: neither an empty run nor a run that exits 1 with every test
+  // passing can read as green or SURVIVED.
+  test('a filter matching no file ran zero tests and is never green', () => {
+    const { result, meta } = parseFixture('vitest', 'no-files');
+    assert.equal(isGreen({ run: { exitCode: meta.exitCode }, parsed: result }), false);
+  });
+
+  test('an unhandled error with every test passing is ERROR unexplained-exit, never SURVIVED', () => {
+    const { result, meta } = parseFixture('vitest', 'unhandled-error');
+    const verdict = classify({ run: { exitCode: meta.exitCode }, parsed: result, expectFail: ['test/math.test.js::adds'] });
+    assert.equal(verdict.verdict, Verdict.ERROR);
+    assert.equal(verdict.reason, Reason.UNEXPLAINED_EXIT);
+  });
+
+  // Invariant: a text-reporter config fails loudly, naming the flags it needs.
+  test('text-reporter output is zero tests plus a diagnostic naming the JSON flags', () => {
+    const text = ' RUN  v5.0.5 /repo\n\n ✓ test/math.test.js (2 tests) 2ms\n\n Test Files  1 passed (1)\n      Tests  2 passed (2)\n';
+    const result = parseWith(text, 0, '/repo');
+    assert.equal(result.ran, 0);
+    assert.match(result.diagnostic, /--reporter=json --outputFile=\/dev\/stdout/);
+    assert.equal(isGreen({ run: { exitCode: 0 }, parsed: result }), false);
+  });
+
+  describe('a damaged report never yields a graded verdict from it', () => {
+    const { stdout, meta } = fixture('vitest', 'fail');
+    const expectFail = ['test/math.test.js::subtracts', 'test/math.test.js::nested > inner failure'];
+    const damaged = (from, to) => {
+      assert.ok(stdout.includes(from), `fixture carries ${from}`);
+      return stdout.replace(from, to);
+    };
+
+    test('the undamaged report grades KILLED (the control)', () => {
+      const parsed = parseWith(stdout, meta.exitCode, meta.cwd);
+      assert.equal(classify({ run: { exitCode: meta.exitCode }, parsed, expectFail }).verdict, Verdict.KILLED);
+    });
+
+    test('truncated JSON is unreadable', () => {
+      const parsed = parseWith(stdout.slice(0, Math.floor(stdout.length / 2)), meta.exitCode, meta.cwd);
+      assert.equal(parsed.ran, 0);
+      assert.match(parsed.diagnostic, /no Vitest JSON report/);
+      assert.equal(classify({ run: { exitCode: meta.exitCode }, parsed, expectFail }).verdict, Verdict.ERROR);
+    });
+
+    test('a byte injected between tokens is unreadable', () => {
+      const parsed = parseWith(damaged('"numFailedTests":2,', '"numFailedTests":2,X'), meta.exitCode, meta.cwd);
+      assert.equal(parsed.ran, 0);
+    });
+
+    test('a byte injected inside a status string is unreadable', () => {
+      const parsed = parseWith(damaged('"status":"failed","title":"subtracts"', '"status":"faXiled","title":"subtracts"'), meta.exitCode, meta.cwd);
+      assert.equal(parsed.ran, 0);
+      assert.match(parsed.diagnostic, /unreadable: .*unknown shape or status/);
+    });
+
+    test('a status flipped to another valid status fails the counter check', () => {
+      const parsed = parseWith(damaged('"status":"failed","title":"subtracts"', '"status":"passed","title":"subtracts"'), meta.exitCode, meta.cwd);
+      assert.equal(parsed.ran, 0);
+      assert.match(parsed.diagnostic, /numPassedTests is 1 but the report lists 2/);
+    });
+
+    test('bytes injected into a failing title grade IMPRECISE, never KILLED or SURVIVED', () => {
+      const parsed = parseWith(damaged('"title":"inner failure"', '"title":"inner fXailure"'), meta.exitCode, meta.cwd);
+      const verdict = classify({ run: { exitCode: meta.exitCode }, parsed, expectFail }).verdict;
+      assert.ok([Verdict.IMPRECISE, Verdict.ERROR].includes(verdict), `got ${verdict}`);
+    });
+  });
+
+  test('extractReport skips a decoy and finds the real report after it', () => {
+    const report = extractReport('{"numTotalTestSuites":1}noise{"numTotalTestSuites":0,"testResults":[]}JSON report written');
+    assert.deepEqual(report, { numTotalTestSuites: 0, testResults: [] });
+    assert.equal(extractReport('nothing here'), null);
+  });
+
+  // Invariant: ids are repo-relative against the workspace the command ran in --
+  // which in copy mode is the copy, not the real tree.
+  test('absolute file paths are relativised against context.cwd only', () => {
+    const { stdout, meta } = fixture('vitest', 'fail');
+    const ids = (cwd) => parseWith(stdout, meta.exitCode, cwd).failedTests.map((t) => t.id);
+    assert.deepEqual(ids(meta.cwd), ['test/math.test.js::subtracts', 'test/math.test.js::nested > inner failure']);
+    assert.deepEqual(ids(undefined), [
+      `${meta.cwd}/test/math.test.js::subtracts`, `${meta.cwd}/test/math.test.js::nested > inner failure`,
+    ]);
+    assert.deepEqual(ids('/some/other/root'), ids(undefined));
+    assert.deepEqual(parseWith(stdout, meta.exitCode, meta.cwd).files, ['test/math.test.js']);
+  });
+
+  test('the names-mode -t pattern selects the named test and not a sibling that extends it', () => {
+    const command = vitest.substitute({
+      scopes: ['test/a.test.js'], refs: ['test/a.test.js::nested > inner failure'], mode: 'names',
+    });
+    const pattern = new RegExp(command.match(/-t '(.*)'$/)[1]);
+    assert.ok(pattern.test('nested > inner failure'));
+    assert.ok(!pattern.test('nested > inner failure two'));
+    assert.ok(!pattern.test('nested inner failure'));
+  });
+});
 
 describe('node-test nested failure paths', () => {
   test('two describes with the same leaf name do not collide to one id', () => {
@@ -251,11 +392,13 @@ describe('scope and substitution', () => {
       }),
       "'tests/t.py::test_one'",
     );
-    assert.match(
+    // Vitest matches -t against its ' > '-joined fullTestName, so the ref's own
+    // path goes through verbatim, escaped and anchored.
+    assert.equal(
       SHIPPED_ADAPTERS.vitest.substitute({
-        scopes: ['test/a.test.js'], refs: ['test/a.test.js::one'], mode: 'names',
+        scopes: ['test/a.test.js'], refs: ['test/a.test.js::nested > inner failure', 'test/a.test.js::one'], mode: 'names',
       }),
-      /-t 'one'/,
+      "'test/a.test.js' -t '^(?:nested > inner failure|one)$'",
     );
     assert.equal(
       SHIPPED_ADAPTERS.dotnet.substitute({
@@ -407,7 +550,7 @@ describe('custom parser loading', () => {
 describe('stripAnsi', () => {
   test('removes escape sequences but leaves real brackets alone', () => {
     assert.equal(stripAnsi('[31mred[0m'), 'red');
-    // vitest prints this shape; eating the brackets would break suite detection.
+    // A runner's real bracketed output; eating the brackets would corrupt it.
     assert.equal(stripAnsi(' FAIL  f.js [ f.js ]'), ' FAIL  f.js [ f.js ]');
   });
 });
