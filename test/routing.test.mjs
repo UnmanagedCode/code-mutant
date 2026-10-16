@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { AdapterError } from '../lib/adapters/index.mjs';
+import { AdapterError, missingCanaryExports } from '../lib/adapters/index.mjs';
 import { Reason, Verdict, classify } from '../lib/classify.mjs';
 import { liveChildCount } from '../lib/exec.mjs';
 import { isGreen, measure } from '../lib/measure.mjs';
@@ -254,6 +254,16 @@ describe('routes that cannot be routed are refused at load', () => {
     }
   });
 
+  // Invariant: a route missing canary() is refused as adapter-no-canary, named.
+  test('a custom route with no canary() is missing it by route name', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'code-mutant-route-nocanary-'));
+    try {
+      write(dir, 'parse.mjs', `export { parse } from ${JSON.stringify(NODE_TEST_MODULE)};\n`);
+      const { adapter } = await loadHarness({ routes: [ROUTES[0], { ...ROUTES[1], runner: 'custom' }], configDir: dir });
+      assert.deepEqual(missingCanaryExports(adapter), ['canary(source, { file }) (route "web")']);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   test('an unknown runner names the route', async () => {
     await assert.rejects(() => harness([{ ...ROUTES[0], runner: 'cargo' }]), /route "unit": unknown runner "cargo"/);
   });
@@ -301,6 +311,56 @@ describe('routing through the CLI', () => {
       assert.deepEqual(mutant.groups.map((g) => [g.route, g.counts.failed]), [['unit', 1], ['spec', 0]]);
       assert.equal(result.exitCode, ExitCode.CLEAN);
       assert.equal(repo.status(), '');
+    } finally { repo.cleanup(); }
+  });
+});
+
+describe('validate, routed', () => {
+  // Invariants: an overlap, a route matching no file, and a vitest route blind
+  // to its report dir are each warned per route; an unrouted ref is the same
+  // problem `run` would refuse it with.
+  test('warns route-overlap, per-route adapter-no-test-patterns and report-dir-unused; an unrouted ref is no-narrow-scope', async () => {
+    const files = guardFiles();
+    files['test/web-a.test.mjs'] = "import { test } from 'node:test';\ntest('w', () => {});\n";
+    const repo = makeRepo({
+      files,
+      config: {
+        baselineCommand: undefined,
+        testCommand: undefined,
+        runner: undefined,
+        routes: [
+          { name: 'unit', tests: ['test/*.test.mjs'], runner: 'node-test', baselineCommand: 'node --test', testCommand: 'node --test {tests}' },
+          { name: 'web', tests: ['test/web-*.test.mjs'], runner: 'node-test', baselineCommand: 'node --test', testCommand: 'node --test {tests}' },
+          { name: 'ui', tests: ['ui/**/*.test.ts'], runner: 'vitest', baselineCommand: 'npx vitest run', testCommand: 'npx vitest run {tests}' },
+        ],
+      },
+      mutants: [{
+        id: 'stray', invariant: 'i', whyNotEquivalent: 'w',
+        sites: [{ file: 'src/guard.mjs', anchor: "return kind === 'user-defined';", replacement: 'return false;' }],
+        expectFail: ['lib/elsewhere.test.mjs::x'],
+      }],
+      label: 'routing-validate',
+    });
+    try {
+      const result = await runCli(['validate', '--json'], { cwd: repo.root });
+      const report = JSON.parse(result.stdout);
+      const issue = (code) => report.issues.filter((i) => i.code === code);
+
+      const [overlap] = issue('route-overlap');
+      assert.match(overlap.detail, /^test\/web-a\.test\.mjs matches the "tests" of routes "unit", "web"; the first, "unit", runs it/);
+      assert.equal(overlap.severity, 'warning');
+
+      const patterns = issue('adapter-no-test-patterns');
+      assert.equal(patterns.length, 1);
+      assert.match(patterns[0].detail, /^route "ui" \(vitest\) declares "tests" \(ui\/\*\*\/\*\.test\.ts\) that match no tracked file/);
+
+      const [blind] = issue('report-dir-unused');
+      assert.match(blind.detail, /^route "ui" \(vitest\) reads its results .* "baselineCommand" and "testCommand" never mention it/);
+
+      const stray = report.mutants[0].issues.find((i) => i.code === 'no-narrow-scope');
+      assert.equal(stray.severity, 'problem');
+      assert.match(stray.detail, /lib\/elsewhere\.test\.mjs matches no route's tests/);
+      assert.equal(result.exitCode, 4);
     } finally { repo.cleanup(); }
   });
 });
