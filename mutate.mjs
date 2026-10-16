@@ -213,6 +213,14 @@ config.json (harness/mutation/config.json)
                    Every measured command gets a fresh, empty
                    $CODE_MUTANT_REPORT_DIR outside the tree; what it writes
                    there reaches parse() as context.reports.
+  routes           Instead of runner/baselineCommand/testCommand (never with
+                   them), for a project with several test runners: an array
+                   of {name, tests, runner, baselineCommand, testCommand}.
+                   A test file belongs to the first route whose "tests" globs
+                   ("*", "**/", no braces) match it; each route's commands
+                   run only for its own files, and the baseline and canary
+                   must hold in every route. Counted adapters whose refs name
+                   files only. See "Routing" in mutants.schema.md.
   isolation        "in-place" (default) or "copy".
   preserve         Paths symlinked into a copy instead of duplicated, e.g.
                    ["node_modules"].

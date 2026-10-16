@@ -78,6 +78,7 @@ project's repo (the *how* persists; see [Artifact lifetime](#artifact-lifetime) 
 | `baselineCommand` | *required* | The project's real "run everything" command, used to measure a clean baseline before any mutant is trusted. |
 | `testCommand` | *required* | The command run per mutant, containing a `{tests}` placeholder the runner substitutes with the narrowed scope (see [Narrowing](#narrowing-and-signal-grades)). |
 | `runner` | *required* | Which output-parsing adapter to use — see [Adapters](#adapters). |
+| `routes` | *unset* | For a project with more than one test runner: an array of `{name, tests, runner, baselineCommand, testCommand}`, **mutually exclusive with** the top-level `runner`/`baselineCommand`/`testCommand`. Each route owns the test files its `tests` globs match (first match wins) and runs them with its own runner and commands; every other key here stays shared. See [Routing](#routing). |
 | `isolation` | `"in-place"` | `"copy"` or `"in-place"` — see [Isolation modes](#isolation-modes). Overridable per invocation with `--copy`/`--in-place`. |
 | `preserve` | `[]` | Paths to symlink into an isolated copy rather than duplicate (e.g. `node_modules`). |
 | `timeoutMs` | `120000` | Per-*command* wall-clock **ceiling** — the fallback for any command with no like-for-like reference (the baseline, a narrow baseline, `setup`/`teardown`). A command killed at its deadline is never counted as a kill; which verdict it gets depends on which command hung — see the `TIMEOUT` row under [Verdicts](#verdicts). |
@@ -103,6 +104,7 @@ The shipped adapters are conveniences that happen to exist already, and they are
 | `runner` | Status |
 |---|---|
 | `node-test`, `exit-code`, `vitest` | **Proven.** Each is driven end-to-end by this project's test suite — real commands, real temp git repos, the full mutate cycle (`vitest` against the pinned Vitest devDependency, `test/vitest-e2e.test.mjs`). |
+| mixed **routing** (`routes`) | **Proven.** A real `node --test` route and a real Vitest route in one repo, through the full mutate cycle (`test/routing-e2e.test.mjs`). |
 | `pytest`, `dotnet` | **Parser-pinned only.** Each parser is tested against stdout/stderr captured from a real toolchain run (see [`test/fixtures/PROVENANCE.md`](test/fixtures/PROVENANCE.md)), so it parses real output rather than a guess at the format. But no full mutate cycle has ever been run against a real project on those stacks. Treat them as a starting point to verify, not as supported. |
 
 **`vitest` reads Vitest's JSON report file, nothing else.** Both commands must pass
@@ -116,6 +118,25 @@ command that writes no report there reads as zero tests, so its baseline fails n
 Those five are the whole shipped set; anything else — Rust included — is a `custom` parser. Why one
 is not shipped for a given stack is recorded in
 [`test/fixtures/PROVENANCE.md`](test/fixtures/PROVENANCE.md).
+
+### Routing
+
+A project with several test runners — a node backend suite and a Vitest frontend suite under its
+own config, say — writes `routes` instead of one `runner`. Each route names the test files it owns
+(`tests` globs, first match wins), the adapter that reads them, and its own commands. Every measured
+command runs the routes through one driver (`lib/route-exec.mjs`), and each route's output is read
+by its own adapter:
+
+- **Baseline:** green only when **every route** is green on its own — a route that ran zero tests
+  fails it, whatever the other routes did.
+- **Narrowing:** a mutant runs only the routes owning one of its `expectFail`/`expectPass` files;
+  a route with no ref in scope does not run (`narrowing.routes`). A ref no route owns is refused.
+- **Canary:** must fire **in every route** the judging command runs.
+- **Verdict:** a route with a broken capture, zero tests, or a non-zero exit naming no failure
+  makes the mutant `ERROR`; otherwise the routes' failures are merged and graded as usual.
+
+Only counted adapters whose references name files can be routed (not `exit-code`, not `dotnet`);
+one route may be `custom`. Full rules: [`mutants.schema.md`](mutants.schema.md#routing).
 
 ### Isolation modes
 
@@ -237,7 +258,7 @@ skipped one.
   `baseBranch` has nothing committed to mutate, so mutating it would report a false clean sweep).
   A dirty-tree measurement is the recurring real-world failure this guards against.
 - **baseline** — an unmutated run of `baselineCommand` in the same isolated copy, recording
-  pass/fail/skip. It must be green.
+  pass/fail/skip. It must be green — under [routing](#routing), green in every route on its own.
 - **canary** — a guaranteed-failing mutation the runner synthesizes at gate time, confirms comes
   back `KILLED`, then discards. It is never written to the repo. Without it, a test command that
   silently runs zero tests would report every mutant `SURVIVED` (every finding false), and one that
@@ -253,7 +274,8 @@ skipped one.
   `baseline`/an empty catalog/a fully resumed run, which have no judging command at all. A scope that
   *cannot* be shown to observe a failure `ERROR`s **its own mutants** (`canary-not-established`, a
   `PARTIAL` gate) rather than failing the whole run — but a run where nothing at all could be attested
-  is still the wholesale refusal it always was.
+  is still the wholesale refusal it always was. Under [routing](#routing), a command is attested only
+  when a canary injected into **each route's own files** fires — one canary per route it runs.
 
 Each gate reports `passed`, `failed`, or **`not-established`** — a gate that could not run at all,
 which must never be read as a pass. It does not fail the exit code, so exit 0 on its own does not

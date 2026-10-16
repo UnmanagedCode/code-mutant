@@ -121,6 +121,54 @@ In exit-code mode there is no substitution — the whole gate command runs.
 Learn mode only: a mutant with no `expectFail`/`expectPass` at all falls back to `baselineCommand`
 (the whole suite) instead of refusing — discovery has no scope to narrow to.
 
+## Routing
+
+A project with more than one test runner (a node backend suite plus a Vitest frontend suite, say)
+writes `routes` in `config.json` instead of the top-level `runner`/`baselineCommand`/`testCommand`
+— the two forms are mutually exclusive, and every other key (`isolation`, `preserve`, `timeoutMs`,
+`hang`, `jobs`, `baseBranch`, `setup`, `teardown`) stays top-level and shared:
+
+```json
+{
+  "routes": [
+    { "name": "backend", "tests": ["tests/*.test.mjs"], "runner": "node-test",
+      "baselineCommand": "node --test 'tests/*.test.mjs'", "testCommand": "node --test {tests}" },
+    { "name": "frontend", "tests": ["frontend/src/**/*.test.ts", "frontend/src/**/*.test.tsx"], "runner": "vitest",
+      "baselineCommand": "npx vitest run --config frontend/vitest.config.ts --reporter=json --outputFile=\"$CODE_MUTANT_REPORT_DIR/vitest.json\"",
+      "testCommand": "npx vitest run --config frontend/vitest.config.ts --reporter=json --outputFile=\"$CODE_MUTANT_REPORT_DIR/vitest.json\" {tests}" }
+  ]
+}
+```
+
+| Rule | Detail |
+|---|---|
+| Route keys | Exactly `name`, `tests`, `runner`, `baselineCommand`, `testCommand`; any other key (a `test` typo) is a config error naming the allowed keys. |
+| `name` | Non-empty, unique, matching `/^[A-Za-z0-9][A-Za-z0-9._-]*$/` (it names a report subdirectory and report lines). |
+| `tests` | Non-empty array of globs in the harness's own dialect (`lib/glob.mjs`): `*` within a segment, `**/` across segments, **no braces** (refused — list `.ts` and `.tsx` separately). Mirror each runner's own discovery (e.g. Vitest's `include`). |
+| `testCommand` | Must contain `{tests}`. |
+| `runner` | A shipped adapter or `custom` (which loads the harness's one `parse.mjs`). Refused at load (exit 4): `exit-code` grade (no named tests, so no file to route), and any adapter whose refs do not name files (`dotnet`, or a `custom` parser overriding `scopeOf`). |
+
+**Ref → route:** a test reference routes by its file part to the **first** route, in declared
+order, whose `tests` match it. A ref matching no route is refused for that mutant (`plan-failed`
+ERROR naming every route's patterns); `validate` reports it as `no-narrow-scope`.
+
+**What runs:** every measured command is one invocation of the route driver
+(`lib/route-exec.mjs`) over route/command pairs. The baseline runs every route's
+`baselineCommand`; a mutant's narrowed command runs only the routes that own one of its scope files,
+each with that route's own `{tests}` substitution — a route with no ref in scope **does not run**,
+and `narrowing.routes` lists the ones that did. The driver runs every route even after one fails,
+each in the runner's process group (a timeout kill reaches them all) with its own report subdir
+`$CODE_MUTANT_REPORT_DIR/<route>/`.
+
+**How the routes' results combine** — each route group is parsed by its own adapter and judged on
+its own before the merged counters are:
+
+| Phase | Rule |
+|---|---|
+| Baseline / narrow baseline | Green only when **every route group is green on its own**: no failures, no compile break, exit 0, `ran > 0`, no truncated/incomplete/spawn error. A route that ran zero tests fails it (`route "<name>": the command ran ZERO tests…`). |
+| Canary | Must fire **in every route the judging command runs** — see [The canary's scope](#the-canarys-scope). |
+| Mutant run | Before grading: a group that failed to start, was truncated or had incomplete output is `ERROR` (`command-failed-to-start` / `output-truncated` / `output-incomplete`); after the merged `compileError` check, a group that ran zero tests is `scope-empty` and a group exiting non-zero naming no failure is `unexplained-exit` — each detail names the route. Then the **merged** failing set is graded against `expectFail`/`expectPass` as usual. |
+
 ## The canary's scope
 
 No mutant verdict in counted mode comes from `baselineCommand`: every verdict comes from the
@@ -146,6 +194,15 @@ harness that is correct and that a narrow canary would wrongly fail, so the rule
 | `narrowing.placeholder === true` | `{tests}` was actually substituted, which is what makes "the command names its scope files" true. A `testCommand` without the placeholder runs the same thing for every mutant. |
 | `narrowing.command !== baselineCommand` | The two commands resolving to one string means there is no second command to attest — a `baselineCommand` already scoped to this mutant's file, or the learn-mode no-refs fallback (which is also `mode: "whole"`). |
 | ≥1 file in `narrowing.scopes` exists | A ref naming a file this tree does not have. |
+
+**Routed harnesses: one canary per route.** Each unit above — the baseline-scope canary, and each
+distinct narrow command — runs one canary **per route the command runs**, injected only into that
+route's own files (discovered from the route's `tests` at baseline scope; drawn from the route's own
+scope files at narrow scope). The unit is `KILLED` only when **every** route's canary fired;
+otherwise it is `FAILED`, and its detail names the unattested routes. Each record carries
+`routes: [{ route, status, target, attempts, durationMs, detail }]`. The aggregate rules below are
+unchanged. A baseline-scope canary therefore costs one composite baseline run per route (cacheable,
+as before); a narrow scope spanning two routes costs two narrow runs.
 
 **A scope whose narrow baseline is not green is skipped**, not attested (`scopes[].skipped:
 "narrow-baseline-not-green"`): its mutants already `ERROR` on the scope itself (`scope-non-green`,
@@ -177,11 +234,11 @@ shape](#the-shape-of-an-ungraded-result)) — or a usage error before the run:
 | `overlapping-anchors` | Two sites of one mutant overlap in the source. |
 | `mixed-site-forms` | An anchor site and a patch site of one mutant touch the same file. |
 | `patch-unparseable` / `patch-rejected` | git could not read the patch, or it does not apply. |
-| `scope-non-green` | The narrowed scope was already failing, or exited non-zero, before any mutation. |
+| `scope-non-green` | The narrowed scope was already failing, or exited non-zero, before any mutation — or a scope file the runner reported no test from: when the adapter reports the files it ran (`files`, e.g. `vitest`), every file the scope names must be among them (`"<file> is in scope but the runner reported no test from it (outside its include?)"`). Routed, each route's group is checked by its own adapter. |
 | `scope-timed-out` | The narrowed scope was killed at its deadline **before any mutation** — `hang.blame: "suite"`, a project defect rather than a mutant to rewrite. |
 | `output-truncated` | The captured output exceeded the capture limit; failure names and/or the summary banner may be missing, so no verdict can be trusted. Never `SURVIVED`. |
 | `output-incomplete` | The command exited but its output streams were still open when the drain grace expired, so something else was holding them and the capture may be short. Treated exactly as `output-truncated`: never `SURVIVED`. |
-| `scope-empty` | The narrowed scope ran **zero tests**. Never reported as `SURVIVED`. |
+| `scope-empty` | The narrowed scope ran **zero tests** — routed, any one route group ran zero. Never reported as `SURVIVED`. |
 | `unexplained-exit` | Counted mode: the command exited non-zero while naming **no failing test** — something the adapter cannot see went wrong, so the run is not observably green. Never reported as `SURVIVED`. |
 | `canary-not-established` | The command that would judge this mutant could not be shown to observe a deliberate break, so nothing it reports is interpretable. Two shapes: **exit-code mode**, where the per-mutant canary could not break the mutated file; and **counted mode**, where this mutant's own narrow scope was not attested by the canary gate (`gates.canary.status: "PARTIAL"`) while some other scope was. |
 | `timed-out` | The command was killed at its deadline (`results[].deadlineMs`; `timeoutMs` only for a command with no unmutated reference). |
@@ -216,13 +273,14 @@ Two severities, and the split is a contract you may script against:
 | `no-expect-fail` | problem | Counted grade with no `expectFail`. Such a mutant **can never read `KILLED`**: if the mutation survives it reports an un-arbitrable `SURVIVED` (nothing was claimed to fail, so the survivor block has no test to point at), and if anything catches it, `IMPRECISE`. `probe` already refuses the same shape outright. Run `run --learn` to discover the failing set and fill `expectFail` from it. |
 | `no-narrow-scope` | problem | `planNarrowing` refused — references are present but none yields a scope. |
 | `mutation-dir-not-ignored` | problem | Catalog-level. `.mutation/` is not gitignored, which `run` hard-stops on. |
-| `adapter-no-canary` | problem | Adapter-level. A counted-grade adapter that does not export `canary(source, {file})` — see [Appendix B](#appendix-b--the-adapter-export-contract). Every command refuses the whole invocation on it — `baseline`, `run` and `probe` alike — before it measures anything. |
-| `adapter-no-test-patterns` | warning | Adapter-level. Counted grade whose `testFilePatterns` match no tracked file (including declaring none): `mutate.mjs baseline` alone cannot discover a canary target. `run` still works when an `expectFail` reference narrows to a real test file, and `baseline` works once a run has journalled a target. |
+| `adapter-no-canary` | problem | Adapter-level (routed: per route, each missing export suffixed with its route). A counted-grade adapter that does not export `canary(source, {file})` — see [Appendix B](#appendix-b--the-adapter-export-contract). Every command refuses the whole invocation on it — `baseline`, `run` and `probe` alike — before it measures anything. |
+| `adapter-no-test-patterns` | warning | Adapter-level. Counted grade whose `testFilePatterns` match no tracked file (including declaring none): `mutate.mjs baseline` alone cannot discover a canary target. `run` still works when an `expectFail` reference narrows to a real test file, and `baseline` works once a run has journalled a target. Routed: reported **per route**, for a route whose `tests` match no tracked file, naming the route. |
+| `route-overlap` | warning | Routed only. A tracked file matches the `tests` of more than one route; the first route in declared order runs it and the others never do. |
 | `ref-file-missing` | warning | The adapter's references name files and `scopeOf(ref)` — the exact string narrowing substitutes — is not a path in this tree. |
 | `ref-shape` | warning | The adapter's references do **not** name files (`dotnet`, `exit-code`) but a reference is written `file::name`. |
 | `refs-ignored` | warning | Exit-code grade with `expectFail`/`expectPass` listed; at that grade the verdict is the command's exit status and those entries are never consulted. Scope with `narrowCommand` instead. |
 | `narrow-downgraded` | warning | `narrowTo: "names"` will not take effect; carries the downgrade reason. |
-| `report-dir-unused` | warning | Adapter-level. The adapter reads its results from the report dir (`vitest`, or a `custom` parser exporting `readsReportDir = true`) but `baselineCommand` or `testCommand` never mentions `CODE_MUTANT_REPORT_DIR`, so the adapter would see zero tests and the baseline gate would fail. Names the required flags. A warning, because a wrapper script can read the variable without the command naming it. |
+| `report-dir-unused` | warning | Adapter-level (routed: per route). The adapter reads its results from the report dir (`vitest`, or a `custom` parser exporting `readsReportDir = true`) but `baselineCommand` or `testCommand` never mentions `CODE_MUTANT_REPORT_DIR`, so the adapter would see zero tests and the baseline gate would fail. Names the required flags. A warning, because a wrapper script can read the variable without the command naming it. |
 
 Nothing reaches the `problem` tier on the strength of a reading of the source — only what the runner
 itself refuses, plus `no-expect-fail`, whose verdicts were observed. A false `problem` blocks a
@@ -310,7 +368,8 @@ finding can be pointed at exactly the commit it was found against.
   isolation: "in-place" | "copy",
   jobs:      number,
   workspaceRoot: string,
-  adapter:   { name, grade: "counted"|"exit-code", modulePath },
+  adapter:   { name, grade: "counted"|"exit-code", modulePath,
+               routes: [ { name, runner, tests, grade, modulePath } ] },   // routes: ROUTED ONLY (name "routed")
   learn:         boolean,         // true when --learn suppressed grading for this run
   mutatedSha:    string|null,     // `git rev-parse HEAD` -- points a survivor at a re-runnable commit
   reproducible:  boolean,         // false only when --allow-dirty was used to proceed on a dirty tree
@@ -336,8 +395,10 @@ finding can be pointed at exactly the commit it was found against.
                                                          // distance is null when the diff is empty or unreadable
     baseline: { outcome: "passed"|"failed", command, counts: {passed,failed,skipped,ran}|null, exitCode,
                 failedTests: [string]|null, durationMs, timedOut, detail,   // failedTests: null when nothing is nameable
-                fromCache, measuredDurationMs },           // (exit-code grade, or a FAILED baseline with no parsed
+                fromCache, measuredDurationMs,             // (exit-code grade, or a FAILED baseline with no parsed
                                                            // failure to name); [] only when green
+                groups: [ { route, runner, counts, exitCode, green, detail, durationMs } ] },
+                                                           // groups: ROUTED ONLY -- each route judged on its own
     canary:   { outcome: "passed"|"failed"|"not-established"|"partial",
                 status: "KILLED"|"FAILED"|"NOT-ESTABLISHED"|"PARTIAL",
                 scope: "baseline"|"narrow"|"mixed"|null,   // WHICH COMMAND(S) THIS GATE ATTESTS ABOUT;
@@ -349,8 +410,11 @@ finding can be pointed at exactly the commit it was found against.
                 scopes: [ {                                  // null when scope === "baseline"
                   command, target, status, grade, attempts, durationMs, detail,
                   mutants: [id],                             // which mutants this command judges
-                  skipped: null|"narrow-baseline-not-green"  // no canary was attempted for this scope
+                  skipped: null|"narrow-baseline-not-green", // no canary was attempted for this scope
+                  routes                                     // ROUTED ONLY, as below
                 } ] | null,
+                routes: [ { route, status, target, attempts, durationMs, detail } ],
+                                                      // ROUTED ONLY: the baseline half's per-route canaries
                 durationMs,                           // summed across every canary this gate ran
                 detail,
                 skipped: null|"no-canary",            // "no-canary": `baseline --no-canary` attempted none
@@ -359,7 +423,8 @@ finding can be pointed at exactly the commit it was found against.
                                                            // than measured here. On a served record durationMs is 0
                                                            // and measuredDurationMs carries the original cost; on a
                                                            // measured one measuredDurationMs is null. Never absent.
-  narrowBaselines: [ { command, green, counts, durationMs } ],   // one entry per DISTINCT narrow scope
+  narrowBaselines: [ { command, green, counts, durationMs, groups } ],   // one entry per DISTINCT narrow scope;
+                                                                        // groups ROUTED ONLY, as on the baseline
   timings: { totalMs, gatesMs, narrowBaselinesMs, mutantsMs },
   selection: { catalogTotal, selected },        // `run` ONLY -- absent on probe/baseline. How many catalog
                                                 // mutants this invocation carried, out of how many the
@@ -389,7 +454,8 @@ finding can be pointed at exactly the commit it was found against.
     grade,                        // WHICH SIGNAL GRADE PRODUCED THIS VERDICT
     reproducible,                 // same run-level value as above, copied onto every result
     narrowing: { mode: "file"|"names"|"command"|"whole", command, scopes,
-                 requestedNames, downgradeReason, placeholder },
+                 requestedNames, downgradeReason, placeholder,
+                 routes },        // routes: ROUTED ONLY -- the routes this command runs, in order
     mutation:  [ { kind: "anchor", file, edits: [{anchor, replacement, line}] }
                | { kind: "patch",  paths, patch, pathSet } ],
     expectFail, expectPass,
@@ -397,6 +463,7 @@ finding can be pointed at exactly the commit it was found against.
     narrowBaseline: { command, green, counts },   // the like-for-like delta reference
     mutantCounts:   { passed, failed, skipped, ran },
     delta:          { passed, failed, skipped },
+    groups: [ { route, runner, counts, exitCode, durationMs } ],   // ROUTED ONLY, measured mutant runs
     canary,                       // exit-code mode only: the per-mutant gate, when one was needed
     exitCode, durationMs,
     applyMs, measureMs, restoreMs,  // this mutant's three phases; each null for a phase that never ran
@@ -784,6 +851,10 @@ export function parse(stdout, stderr, exitCode, context) { … }
   cap as stdout and stderr: over it, the run is truncated — `ERROR` (`output-truncated`), never a
   verdict — and `reports` is `{}`. `/dev/stdout` is not an alternative: the runner captures through
   a Unix socket on Linux, which a path-based `open()` cannot write to (`ENXIO`).
+
+`groups` is never a field a parser returns: it is produced only by the routed adapter
+(`lib/routing.mjs`), which hands each route's output to that route's own adapter — a `custom` route
+included — with the workspace's `cwd` and that route's own `reports`.
 
 An adapter that reads its results from the report dir may declare `export const readsReportDir =
 true` (and `export const REQUIRED_FLAGS = "<flags>"`), so `validate` warns (`report-dir-unused`) when
