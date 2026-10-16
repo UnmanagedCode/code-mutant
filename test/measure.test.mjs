@@ -72,3 +72,28 @@ describe('scope coverage', () => {
     assert.deepEqual(unreportedScopeFiles({ parsed, scopes: ['test/b.test.js'] }), []);
   });
 });
+
+describe('scope coverage, routed', () => {
+  // Invariant: a routed scope file is judged by the route that owns it, and a
+  // file whose route never reported back is unreported.
+  test('each file is checked against its own route group', () => {
+    const routes = { 'web/a.test.js': { name: 'web' }, 'test/b.test.mjs': { name: 'unit' }, 'web/c.test.js': { name: 'web' } };
+    const routeOf = (file) => routes[file] ?? null;
+    const parsed = {
+      groups: [
+        { route: 'web', parsed: { files: ['web/a.test.js'] } },
+        // node-test reports no files, so its scope files are never second-guessed.
+        { route: 'unit', parsed: {} },
+      ],
+    };
+    assert.deepEqual(
+      unreportedScopeFiles({ parsed, scopes: ['web/a.test.js', 'test/b.test.mjs', 'web/c.test.js'], routeOf }),
+      ['web/c.test.js'],
+    );
+    assert.deepEqual(
+      unreportedScopeFiles({ parsed: { groups: [] }, scopes: ['web/a.test.js'], routeOf }),
+      ['web/a.test.js'],
+      'a route that never ran reported nothing',
+    );
+  });
+});

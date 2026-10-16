@@ -17,7 +17,7 @@ import process from 'node:process';
 
 import { readFileSync } from 'node:fs';
 
-import { AdapterError, loadAdapter } from './lib/adapters/index.mjs';
+import { AdapterError } from './lib/adapters/index.mjs';
 import { describeDistance, listCandidates } from './lib/candidates.mjs';
 import {
   CatalogError, assertMutationDirIgnored, loadCatalog, requireCatalog, selectById, writeResults,
@@ -26,6 +26,7 @@ import { ConfigError, NoHarnessError, loadConfig } from './lib/config.mjs';
 import { checkCleanTree } from './lib/gates.mjs';
 import { installGuard } from './lib/guard.mjs';
 import { EXIT_CODE_MEANINGS, ExitCode, exitCodeFor, formatReport, toJson } from './lib/report.mjs';
+import { loadHarness } from './lib/routing.mjs';
 import { execute } from './lib/runner.mjs';
 import { SnapshotError } from './lib/snapshot.mjs';
 import { SiteError } from './lib/sites.mjs';
@@ -365,7 +366,7 @@ async function buildContext(flags, log, {
   if (!allowNoCanary && flags['--no-canary']) {
     throw new Error(NO_CANARY_OUT_OF_SCOPE);
   }
-  const config = loadConfig({
+  const { config, adapter } = await loadHarness(loadConfig({
     repoRoot,
     overrides: {
       isolation: isolationOverride(flags),
@@ -373,8 +374,7 @@ async function buildContext(flags, log, {
       baseBranch: allowBaseOverride ? flags['--base'] : undefined,
     },
     warn: (message) => log(`note: ${message}`),
-  });
-  const adapter = await loadAdapter(config.runner, { configDir: config.configDir });
+  }));
   if (allowLearn && flags['--learn'] && adapter.grade === 'exit-code') {
     throw new Error(
       `--learn needs a counted-grade adapter; the ${adapter.name} adapter is exit-code grade and never `

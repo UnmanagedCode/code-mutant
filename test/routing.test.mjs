@@ -1,0 +1,306 @@
+// Routing: the composite adapter, the route driver, and the per-route checks
+// that keep one route's failure from hiding behind another's green. Cheap: the
+// routes here are node-only, and envelopes are built from real captured output.
+
+import { test, describe } from 'node:test';
+import assert from 'node:assert/strict';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import { AdapterError } from '../lib/adapters/index.mjs';
+import { Reason, Verdict, classify } from '../lib/classify.mjs';
+import { liveChildCount } from '../lib/exec.mjs';
+import { isGreen, measure } from '../lib/measure.mjs';
+import { planNarrowing } from '../lib/narrow.mjs';
+import { ENVELOPE_MARKER } from '../lib/route-exec.mjs';
+import { compileRoutedCommand, loadHarness } from '../lib/routing.mjs';
+import { ExitCode } from '../lib/report.mjs';
+import { runCli } from './helpers/cli.mjs';
+import { git, guardFiles, makeRepo, write } from './helpers/tmp-repo.mjs';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const NODE_FIXTURES = path.join(HERE, 'fixtures', 'node-test');
+const NODE_TEST_MODULE = pathToFileURL(path.join(HERE, '..', 'lib', 'adapters', 'node-test.mjs')).href;
+
+const nodeFixture = (name) => readFileSync(path.join(NODE_FIXTURES, `${name}.stdout.txt`), 'utf8');
+
+const ROUTES = [
+  { name: 'unit', tests: ['test/*.test.mjs'], runner: 'node-test', baselineCommand: 'node --test test/', testCommand: 'node --test {tests}' },
+  { name: 'web', tests: ['web/**/*.test.mjs', 'test/web-*.test.mjs'], runner: 'node-test', baselineCommand: 'node --test web/', testCommand: 'node --test --x {tests}' },
+];
+
+async function harness(routes = ROUTES) {
+  return loadHarness({ routes, configDir: os.tmpdir(), baselineCommand: null, testCommand: null, runner: null });
+}
+
+function envelope(groups) {
+  return `${ENVELOPE_MARKER} ${JSON.stringify({
+    groups: groups.map((g) => ({
+      exitCode: 0, signal: null, durationMs: 1, truncated: false, outputIncomplete: false, spawnError: null,
+      stderr: '', reports: {}, ...g,
+    })),
+  })}\n`;
+}
+
+const RUN = { exitCode: 1, timedOut: false, truncated: false, outputIncomplete: false, spawnError: null, durationMs: 5 };
+
+describe('the routed adapter', () => {
+  test('substitute runs only the routes with a ref in scope, in declared order', async () => {
+    const { adapter, config } = await harness();
+    const narrowing = planNarrowing({
+      mutant: { id: 'm', expectFail: ['web/a.test.mjs::x', 'test/b.test.mjs::y'] },
+      adapter,
+      testCommand: config.testCommand,
+    });
+    assert.equal(narrowing.placeholder, true);
+    assert.deepEqual(narrowing.routes, ['unit', 'web']);
+    assert.equal(narrowing.command, compileRoutedCommand([
+      ['unit', "node --test 'test/b.test.mjs'"], ['web', "node --test --x 'web/a.test.mjs'"],
+    ]));
+
+    const unitOnly = planNarrowing({ mutant: { id: 'm', expectFail: ['test/b.test.mjs::y'] }, adapter, testCommand: config.testCommand });
+    assert.deepEqual(unitOnly.routes, ['unit']);
+    assert.equal(unitOnly.command, compileRoutedCommand([['unit', "node --test 'test/b.test.mjs'"]]));
+  });
+
+  test('the first route in declared order wins a file both match', async () => {
+    const { adapter } = await harness();
+    // test/web-x.test.mjs matches both unit's test/*.test.mjs and web's test/web-*.
+    assert.equal(adapter.routeOf('test/web-x.test.mjs').name, 'unit');
+  });
+
+  test('an unrouted ref throws, naming every route\'s patterns, so the mutant is plan-failed', async () => {
+    const { adapter, config } = await harness();
+    assert.throws(
+      () => planNarrowing({ mutant: { id: 'm', expectFail: ['lib/x.test.mjs::y'] }, adapter, testCommand: config.testCommand }),
+      /lib\/x\.test\.mjs matches no route's tests \(unit: test\/\*\.test\.mjs; web: web\/\*\*\/\*\.test\.mjs, test\/web-\*\.test\.mjs\)/,
+    );
+  });
+
+  test('the baseline is every route\'s baseline through the driver', async () => {
+    const { config } = await harness();
+    assert.equal(config.baselineCommand, compileRoutedCommand([['unit', 'node --test test/'], ['web', 'node --test web/']]));
+  });
+
+  test('no envelope reads as zero tests with a diagnostic, never green', async () => {
+    const { adapter } = await harness();
+    const parsed = adapter.parse('', 'boom\n', 1, {});
+    assert.equal(parsed.ran, 0);
+    assert.match(parsed.diagnostic, /route driver produced no envelope \(stderr: boom\)/);
+    assert.equal(isGreen({ run: { ...RUN, exitCode: 0 }, parsed }), false);
+  });
+});
+
+describe('per-route judgement', () => {
+  // Invariant: a route with no tests is never a silent pass, whatever the other
+  // routes did.
+  test('a route that ran zero tests fails the baseline, naming the route, beside a green route', async () => {
+    const { adapter } = await harness();
+    const parsed = adapter.parse(envelope([
+      { route: 'unit', stdout: nodeFixture('pass') },
+      { route: 'web', stdout: '' },
+    ]), '', 0, {});
+    assert.equal(parsed.ran, 2, 'the merged counters alone look green');
+    assert.equal(isGreen({ run: { ...RUN, exitCode: 0 }, parsed }), false);
+    const { describeNotGreen } = await import('../lib/measure.mjs');
+    assert.match(describeNotGreen({ run: { ...RUN, exitCode: 0 }, parsed }), /^route "web": the command ran ZERO tests/);
+  });
+
+  test('classify: a route exiting non-zero naming nothing is ERROR unexplained-exit, even when another route names the kill', async () => {
+    const { adapter } = await harness();
+    const parsed = adapter.parse(envelope([
+      { route: 'unit', stdout: nodeFixture('fail'), exitCode: 1 },
+      { route: 'web', stdout: nodeFixture('pass'), exitCode: 1 },
+    ]), '', 1, {});
+    const verdict = classify({
+      run: RUN, parsed, expectFail: ['test/math.test.mjs::subtracts', 'test/math.test.mjs::nested > inner failure'],
+    });
+    assert.equal(verdict.verdict, Verdict.ERROR);
+    assert.equal(verdict.reason, Reason.UNEXPLAINED_EXIT);
+    assert.match(verdict.detail, /^route "web": /);
+  });
+
+  test('classify: a truncated route is ERROR output-truncated, naming the route', async () => {
+    const { adapter } = await harness();
+    const parsed = adapter.parse(envelope([
+      { route: 'unit', stdout: nodeFixture('fail'), exitCode: 1 },
+      { route: 'web', stdout: nodeFixture('pass'), truncated: true },
+    ]), '', 1, {});
+    const verdict = classify({ run: RUN, parsed, expectFail: ['test/math.test.mjs::subtracts'] });
+    assert.equal(verdict.reason, Reason.OUTPUT_TRUNCATED);
+    assert.match(verdict.detail, /^route "web": /);
+  });
+
+  test('classify: a route that ran zero tests is ERROR scope-empty, naming the route', async () => {
+    const { adapter } = await harness();
+    const parsed = adapter.parse(envelope([
+      { route: 'unit', stdout: nodeFixture('fail'), exitCode: 1 },
+      { route: 'web', stdout: '' },
+    ]), '', 1, {});
+    const verdict = classify({ run: RUN, parsed, expectFail: ['test/math.test.mjs::subtracts'] });
+    assert.equal(verdict.reason, Reason.SCOPE_EMPTY);
+    assert.match(verdict.detail, /^route "web": this route ran zero tests/);
+  });
+
+  test('classify: clean groups are graded on the merged failing set', async () => {
+    const { adapter } = await harness();
+    const parsed = adapter.parse(envelope([
+      { route: 'unit', stdout: nodeFixture('fail'), exitCode: 1 },
+      { route: 'web', stdout: nodeFixture('pass') },
+    ]), '', 1, {});
+    const verdict = classify({
+      run: RUN, parsed, expectFail: ['test/math.test.mjs::subtracts', 'test/math.test.mjs::nested > inner failure'],
+    });
+    assert.equal(verdict.verdict, Verdict.KILLED, verdict.detail);
+  });
+});
+
+describe('the route driver', () => {
+  const MODULE = "import { test } from 'node:test';\n";
+
+  test('runs every route even after one fails, and exits 1', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'code-mutant-route-driver-'));
+    try {
+      write(root, 'a/one.test.mjs', `${MODULE}test('a fails', () => { throw new Error('x'); });\n`);
+      write(root, 'b/two.test.mjs', `${MODULE}test('b passes', () => {});\n`);
+      const { adapter } = await harness([
+        { ...ROUTES[0], name: 'a', tests: ['a/*.test.mjs'] },
+        { ...ROUTES[0], name: 'b', tests: ['b/*.test.mjs'] },
+      ]);
+      const command = compileRoutedCommand([['a', "node --test 'a/one.test.mjs'"], ['b', "node --test 'b/two.test.mjs'"]]);
+      const config = { timeoutMs: 30_000, hang: { factor: 10, floorMs: 0 }, setup: null, teardown: null };
+      const outcome = await measure({ command, config, adapter, workspace: { root } });
+      assert.equal(outcome.run.exitCode, 1);
+      assert.deepEqual(outcome.parsed.groups.map((g) => [g.route, g.exitCode, g.parsed.ran]), [['a', 1, 1], ['b', 0, 1]]);
+      assert.deepEqual(outcome.parsed.failedTests.map((t) => t.id), ['a/one.test.mjs::a fails']);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  // Invariant: a hung route cannot outlive the runner's deadline -- the group
+  // kill reaches the driver's grandchildren, so nothing still reads a mutated
+  // file while restore runs.
+  test('a timeout kill reaches a route\'s grandchildren', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'code-mutant-route-kill-'));
+    const pidFile = path.join(root, 'grandchild.pid');
+    try {
+      const { adapter } = await harness();
+      const hang = `node -e 'setInterval(() => {}, 1000)' & echo $! > '${pidFile}'; wait`;
+      const command = compileRoutedCommand([['unit', 'true'], ['web', hang]]);
+      const config = { timeoutMs: 30_000, hang: { factor: 10, floorMs: 0 }, setup: null, teardown: null };
+      const outcome = await measure({ command, config, adapter, workspace: { root }, deadlineMs: 1_000 });
+      assert.equal(outcome.run.timedOut, true);
+      assert.equal(liveChildCount(), 0);
+      const pid = Number(readFileSync(pidFile, 'utf8'));
+      // Reaped or a zombie: either way it is no longer running.
+      const running = () => {
+        const status = `/proc/${pid}/status`;
+        return existsSync(status) && !/^State:\s+Z/m.test(readFileSync(status, 'utf8'));
+      };
+      for (let i = 0; i < 50 && running(); i += 1) await new Promise((r) => { setTimeout(r, 20); });
+      assert.equal(running(), false, `grandchild ${pid} survived the group kill`);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test('each route gets its own report subdir, and only its own reports', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'code-mutant-route-reports-'));
+    try {
+      const seen = [];
+      const recording = {
+        grade: 'counted', refsNameFiles: true, canNameFilter: false, testFilePatterns: [], modulePath: null,
+        parse: (stdout, stderr, exitCode, context) => {
+          seen.push({ stdout: stdout.trim(), reports: context.reports });
+          return { grade: 'counted', passed: 1, failed: 0, skipped: 0, ran: 1, failedTests: [], compileError: false, counts: {} };
+        },
+      };
+      const { createRoutedAdapter } = await import('../lib/routing.mjs');
+      const adapter = createRoutedAdapter(['a', 'b'].map((name) => ({
+        name, tests: [`${name}/*`], regexes: [new RegExp(`^${name}/`)], runner: 'fake', adapter: recording,
+      })));
+      const write1 = (name) => `basename "$CODE_MUTANT_REPORT_DIR"; printf ${name} > "$CODE_MUTANT_REPORT_DIR/r.json"`;
+      const command = compileRoutedCommand([['a', write1('a')], ['b', write1('b')]]);
+      const config = { timeoutMs: 30_000, hang: { factor: 10, floorMs: 0 }, setup: null, teardown: null };
+      await measure({ command, config, adapter, workspace: { root } });
+      assert.deepEqual(seen, [{ stdout: 'a', reports: { 'r.json': 'a' } }, { stdout: 'b', reports: { 'r.json': 'b' } }]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('routes that cannot be routed are refused at load', () => {
+  test('an exit-code route', async () => {
+    await assert.rejects(() => harness([{ ...ROUTES[0], runner: 'exit-code' }]),
+      (err) => err instanceof AdapterError && /route "unit": runner "exit-code" cannot be routed: it is exit-code grade -- routing splits test FILES/.test(err.message));
+  });
+
+  test('a dotnet route', async () => {
+    await assert.rejects(() => harness([{ ...ROUTES[0], runner: 'dotnet' }]),
+      (err) => err instanceof AdapterError && /route "unit": runner "dotnet" cannot be routed: its test references do not name files/.test(err.message));
+  });
+
+  test('a custom route whose parser declares exit-code grade, or overrides scopeOf', async () => {
+    for (const [body, pattern] of [
+      [`export { parse } from ${JSON.stringify(NODE_TEST_MODULE)};\nexport const grade = 'exit-code';\n`, /exit-code grade/],
+      [`export { parse, canary } from ${JSON.stringify(NODE_TEST_MODULE)};\nexport function scopeOf(ref) { return ref; }\n`, /do not name files/],
+    ]) {
+      const dir = mkdtempSync(path.join(os.tmpdir(), 'code-mutant-route-custom-'));
+      try {
+        write(dir, 'parse.mjs', body);
+        await assert.rejects(
+          () => loadHarness({ routes: [{ ...ROUTES[0], runner: 'custom' }], configDir: dir }),
+          (err) => err instanceof AdapterError && pattern.test(err.message),
+        );
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    }
+  });
+
+  test('an unknown runner names the route', async () => {
+    await assert.rejects(() => harness([{ ...ROUTES[0], runner: 'cargo' }]), /route "unit": unknown runner "cargo"/);
+  });
+});
+
+describe('routing through the CLI', () => {
+  // Invariant: routing composes with `custom` -- one route parsed by the
+  // harness's own parse.mjs, one by a shipped adapter, graded as one mutant.
+  test('a custom route beside a node-test route grades KILLED', async () => {
+    const files = guardFiles();
+    files['spec/extra.spec.mjs'] = "import { test } from 'node:test';\ntest('extra', () => {});\n";
+    const repo = makeRepo({
+      files,
+      config: {
+        baselineCommand: undefined,
+        testCommand: undefined,
+        runner: undefined,
+        routes: [
+          { name: 'unit', tests: ['test/*.test.mjs'], runner: 'node-test', baselineCommand: "node --test 'test/*.test.mjs'", testCommand: 'node --test {tests}' },
+          { name: 'spec', tests: ['spec/*.spec.mjs'], runner: 'custom', baselineCommand: "node --test 'spec/*.spec.mjs'", testCommand: 'node --test {tests}' },
+        ],
+      },
+      mutants: [{
+        id: 'routed',
+        invariant: 'user-defined backends are allowed',
+        whyNotEquivalent: 'denies a backend the guard must admit',
+        sites: [{ file: 'src/guard.mjs', anchor: "return kind === 'user-defined';", replacement: 'return false;' }],
+        expectFail: ['test/guard.test.mjs::allows user-defined backends'],
+        expectPass: ['spec/extra.spec.mjs::extra'],
+      }],
+      label: 'routing-custom',
+    });
+    try {
+      write(repo.root, 'harness/mutation/parse.mjs', `export { parse, canary } from ${JSON.stringify(NODE_TEST_MODULE)};\n`);
+      git(repo.root, ['add', '-A']);
+      git(repo.root, ['commit', '-qm', 'parser']);
+      const result = await runCli(['run', '--all', '--json'], { cwd: repo.root });
+      const report = JSON.parse(result.stdout);
+      assert.equal(report.gates.baseline.outcome, 'passed', report.gates.baseline.detail);
+      assert.deepEqual(report.gates.baseline.groups.map((g) => [g.route, g.green]), [['unit', true], ['spec', true]]);
+      assert.deepEqual(report.adapter.routes.map((r) => [r.name, r.runner]), [['unit', 'node-test'], ['spec', 'custom']]);
+      const [mutant] = report.results;
+      assert.equal(mutant.verdict, 'KILLED', mutant.detail);
+      assert.deepEqual(mutant.narrowing.routes, ['unit', 'spec']);
+      assert.deepEqual(mutant.groups.map((g) => [g.route, g.counts.failed]), [['unit', 1], ['spec', 0]]);
+      assert.equal(result.exitCode, ExitCode.CLEAN);
+      assert.equal(repo.status(), '');
+    } finally { repo.cleanup(); }
+  });
+});
