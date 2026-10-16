@@ -11,10 +11,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { AdapterError, missingCanaryExports } from '../lib/adapters/index.mjs';
 import { Reason, Verdict, classify } from '../lib/classify.mjs';
-import { liveChildCount } from '../lib/exec.mjs';
+import { MAX_CAPTURE_BYTES, liveChildCount } from '../lib/exec.mjs';
 import { isGreen, measure } from '../lib/measure.mjs';
 import { planNarrowing } from '../lib/narrow.mjs';
-import { ENVELOPE_MARKER } from '../lib/route-exec.mjs';
+import { ENVELOPE_MARKER, runRoutes } from '../lib/route-exec.mjs';
 import { compileRoutedCommand, loadHarness } from '../lib/routing.mjs';
 import { ExitCode } from '../lib/report.mjs';
 import { runCli } from './helpers/cli.mjs';
@@ -144,6 +144,21 @@ describe('per-route judgement', () => {
     assert.match(verdict.detail, /^route "web": /);
   });
 
+  // Invariant: a route whose command could not even start is ERROR
+  // command-failed-to-start naming the route -- not the scope-empty its empty
+  // output would otherwise read as.
+  test('classify: a route that failed to start is ERROR command-failed-to-start, naming the route', async () => {
+    const { adapter } = await harness();
+    const parsed = adapter.parse(envelope([
+      { route: 'unit', stdout: nodeFixture('fail'), exitCode: 1 },
+      { route: 'web', stdout: '', exitCode: 127, spawnError: 'spawn /bin/sh ENOENT' },
+    ]), '', 1, {});
+    const verdict = classify({ run: RUN, parsed, expectFail: ['test/math.test.mjs::subtracts'] });
+    assert.equal(verdict.verdict, Verdict.ERROR);
+    assert.equal(verdict.reason, Reason.COMMAND_FAILED_TO_START);
+    assert.equal(verdict.detail, 'route "web": the command could not be started: spawn /bin/sh ENOENT');
+  });
+
   test('classify: a route that ran zero tests is ERROR scope-empty, naming the route', async () => {
     const { adapter } = await harness();
     const parsed = adapter.parse(envelope([
@@ -233,6 +248,46 @@ describe('the route driver', () => {
       const pid = Number(readFileSync(pidFile, 'utf8'));
       assert.equal(await stillRunning(pid), false, `holder ${pid} outlived the run`);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  // Invariant: one capture budget spans every route's streams AND reports --
+  // the envelope carries them all -- so routes that are each under the cap but
+  // together over it are truncated, never silently passed through.
+  describe('the capture budget across routes', () => {
+    const half = Math.floor(MAX_CAPTURE_BYTES * 0.6);
+    const report = (bytes) => `head -c ${bytes} /dev/zero > "$CODE_MUTANT_REPORT_DIR/r.json"`;
+    const drive = async (pairs) => {
+      const root = mkdtempSync(path.join(os.tmpdir(), 'code-mutant-route-budget-'));
+      try {
+        return await runRoutes(pairs, { cwd: root, env: { ...process.env, CODE_MUTANT_REPORT_DIR: root } });
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    };
+
+    test('a report that fits alone but not after an earlier route\'s is withheld and truncated', async () => {
+      const groups = await drive([['a', report(half)], ['b', report(half)]]);
+      assert.deepEqual(groups.map((g) => [g.truncated, Object.keys(g.reports)]), [[false, ['r.json']], [true, []]]);
+    });
+
+    test('once the budget is spent, a later route is truncated even with nothing to read', async () => {
+      const groups = await drive([['a', report(MAX_CAPTURE_BYTES + 1)], ['b', 'echo fine']]);
+      assert.deepEqual(groups.map((g) => g.truncated), [true, true]);
+      assert.equal(groups[1].stdout, 'fine\n');
+    });
+
+    test('a route writing a report past the cap is ERROR output-truncated through the routed path', async () => {
+      const root = mkdtempSync(path.join(os.tmpdir(), 'code-mutant-route-cap-'));
+      try {
+        const { adapter } = await harness();
+        const command = compileRoutedCommand([['unit', report(MAX_CAPTURE_BYTES + 1)]]);
+        const config = { timeoutMs: 30_000, hang: { factor: 10, floorMs: 0 }, setup: null, teardown: null };
+        const outcome = await measure({ command, config, adapter, workspace: { root } });
+        assert.equal(outcome.run.truncated, false, 'the driver\'s own envelope fit');
+        const verdict = classify({ run: outcome.run, parsed: outcome.parsed, expectFail: ['test/a.test.mjs::x'] });
+        assert.equal(verdict.verdict, Verdict.ERROR);
+        assert.equal(verdict.reason, Reason.OUTPUT_TRUNCATED);
+        assert.match(verdict.detail, /^route "unit": /);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
   });
 
   test('each route gets its own report subdir, and only its own reports', async () => {
@@ -341,6 +396,13 @@ describe('routing through the CLI', () => {
       assert.equal(mutant.verdict, 'KILLED', mutant.detail);
       assert.deepEqual(mutant.narrowing.routes, ['unit', 'spec']);
       assert.deepEqual(mutant.groups.map((g) => [g.route, g.counts.failed]), [['unit', 1], ['spec', 0]]);
+      // Invariant: each distinct narrow scope records every route it ran, with
+      // that route's own counts and green reading.
+      assert.equal(report.narrowBaselines.length, 1);
+      assert.deepEqual(
+        report.narrowBaselines[0].groups.map((g) => [g.route, g.runner, g.green, g.counts.ran]),
+        [['unit', 'node-test', true, 3], ['spec', 'custom', true, 1]],
+      );
       assert.equal(result.exitCode, ExitCode.CLEAN);
       assert.equal(repo.status(), '');
     } finally { repo.cleanup(); }
@@ -393,6 +455,47 @@ describe('validate, routed', () => {
       assert.equal(stray.severity, 'problem');
       assert.match(stray.detail, /lib\/elsewhere\.test\.mjs matches no route's tests/);
       assert.equal(result.exitCode, 4);
+    } finally { repo.cleanup(); }
+  });
+});
+
+describe('the mutant-run path, routed', () => {
+  // Invariant: a narrowed scope where ANY route ran zero tests makes its
+  // mutant ERROR scope-empty -- even though the other route's tests keep the
+  // merged count above zero, which alone would read as scope-non-green.
+  test('a narrow scope with one empty route is scope-empty, not scope-non-green', async () => {
+    const files = guardFiles();
+    files['spec/b.spec.mjs'] = "import { test } from 'node:test';\ntest('b', () => {});\n";
+    // The spec route's baseline reports a test; its narrowed command none.
+    files['tools/one.mjs'] = "process.stdout.write('ℹ tests 1\\nℹ pass 1\\nℹ fail 0\\n');\n";
+    files['tools/none.mjs'] = "process.stdout.write('ℹ tests 0\\nℹ pass 0\\nℹ fail 0\\n');\n";
+    const repo = makeRepo({
+      files,
+      config: {
+        baselineCommand: undefined,
+        testCommand: undefined,
+        runner: undefined,
+        routes: [
+          { name: 'unit', tests: ['test/*.test.mjs'], runner: 'node-test', baselineCommand: "node --test 'test/*.test.mjs'", testCommand: 'node --test {tests}' },
+          { name: 'spec', tests: ['spec/*.spec.mjs'], runner: 'node-test', baselineCommand: 'node tools/one.mjs', testCommand: 'node tools/none.mjs {tests}' },
+        ],
+      },
+      mutants: [{
+        id: 'spans', invariant: 'i', whyNotEquivalent: 'w',
+        sites: [{ file: 'src/guard.mjs', anchor: "return kind === 'user-defined';", replacement: 'return false;' }],
+        expectFail: ['test/guard.test.mjs::allows user-defined backends'],
+        expectPass: ['spec/b.spec.mjs::b'],
+      }],
+      label: 'routing-scope-empty',
+    });
+    try {
+      const report = JSON.parse((await runCli(['run', '--all', '--json'], { cwd: repo.root })).stdout);
+      assert.equal(report.gates.baseline.outcome, 'passed', report.gates.baseline.detail);
+      assert.equal(report.narrowBaselines[0].counts.ran, 3, 'the merged count is not zero');
+      const [mutant] = report.results;
+      assert.equal(mutant.verdict, 'ERROR');
+      assert.equal(mutant.reason, 'scope-empty');
+      assert.match(mutant.detail, /route "spec": the command ran ZERO tests/);
     } finally { repo.cleanup(); }
   });
 });

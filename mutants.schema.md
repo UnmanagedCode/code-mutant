@@ -160,6 +160,15 @@ and `narrowing.routes` lists the ones that did. The driver runs every route even
 each in the runner's process group (a timeout kill reaches them all) with its own report subdir
 `$CODE_MUTANT_REPORT_DIR/<route>/`.
 
+**The printed report** shows, beside the `--json` fields in Appendix A:
+
+| Where | Line |
+|---|---|
+| Header | `routes: <name>=<runner> [<tests>]; …` |
+| Baseline gate | one line per route under it: `- <route>  green\|NOT GREEN  <p/f/s> (p/f/s), exit <n>  [<detail>]` |
+| Canary gate | one line per route under the baseline-scope canary and under each narrow scope: `- <route> KILLED via <target>`, or `- <route> NOT FIRED  <detail>` |
+| Survivor block | `routes run:   <routes> (<route>: no ref in scope, …)` — which runners judged the survivor, and which never ran |
+
 **How the routes' results combine** — each route group is parsed by its own adapter and judged on
 its own before the merged counters are:
 
@@ -871,7 +880,7 @@ It must return:
 | `compileError` | boolean | True for a build/module-load break. Yields `IMPRECISE`. Never guess it from an exit code alone. |
 | `counts` | object | Free-form extras, carried into the report. |
 | `files` | `[string]`, optional | The repo-relative test files the run reported. When present, every file a narrowed scope names must appear in it, or that scope's narrow baseline is non-green (`"<file> is in scope but the runner reported no test from it (outside its include?)"`) and its mutants are `ERROR` (`scope-non-green`). Absent, no such check is made. |
-| `diagnostic` | string \| null, optional | Why the parser read nothing, when it read nothing (e.g. no report on stdout). Appended to the zero-tests detail of a baseline, a narrow baseline and a `scope-empty` result. |
+| `diagnostic` | string \| null, optional | Why the parser read nothing, when it read nothing (e.g. the command wrote no report file into its report dir, or the report did not parse). Appended to the zero-tests detail of a baseline, a narrow baseline and a `scope-empty` result. |
 
 **The adapter's grade is a module-level export**, separate from the `grade` field `parse()` returns:
 

@@ -135,6 +135,10 @@ by its own adapter:
 - **Verdict:** a route with a broken capture, zero tests, or a non-zero exit naming no failure
   makes the mutant `ERROR`; otherwise the routes' failures are merged and graded as usual.
 
+The printed report names the routes in its header, prints each route's own baseline counts and
+canary outcome under those gates, and says in each survivor block which routes judged it
+(`routes run:`) — a route with no ref in scope never ran, so it could not have caught the mutation.
+
 Only counted adapters whose references name files can be routed (not `exit-code`, not `dotnet`);
 one route may be `custom`. Full rules: [`mutants.schema.md`](mutants.schema.md#routing).
 

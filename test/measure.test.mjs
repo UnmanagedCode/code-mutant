@@ -52,8 +52,8 @@ describe('a counted command must agree with its own exit code', () => {
 describe('zero-test diagnostics', () => {
   // Invariant: a zero-test baseline names why the adapter read nothing.
   test('describeNotGreen appends the adapter diagnostic to the zero-tests text', () => {
-    const parsed = { ...countedResult({ ran: 0 }), diagnostic: 'no Vitest JSON report on stdout' };
-    assert.match(describeNotGreen({ run: RUN, parsed }), /ran ZERO tests \(exit 0\).* -- no Vitest JSON report on stdout$/);
+    const parsed = { ...countedResult({ ran: 0 }), diagnostic: 'no Vitest JSON report (vitest.json) in the report dir' };
+    assert.match(describeNotGreen({ run: RUN, parsed }), /ran ZERO tests \(exit 0\).* -- no Vitest JSON report \(vitest\.json\) in the report dir$/);
     assert.doesNotMatch(describeNotGreen({ run: RUN, parsed: countedResult({ ran: 0 }) }), / -- /);
   });
 });

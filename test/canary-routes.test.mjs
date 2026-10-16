@@ -72,6 +72,8 @@ describe('canary per route', () => {
       assert.match(printed, /routes: unit=node-test \[test\/\*\.test\.mjs\]; spec=node-test \[spec\/\*\.spec\.mjs\]/);
       assert.match(printed, /- unit KILLED via test\/guard\.test\.mjs/);
       assert.match(printed, /- spec NOT FIRED {2}route "spec": /);
+      // Invariant: the baseline gate prints each route's own reading.
+      assert.match(printed, /\n {12}- unit {2}green {2}3\/0\/0 \(p\/f\/s\), exit 0\n {12}- spec {2}green {2}1\/0\/0 \(p\/f\/s\), exit 0\n/);
       assert.equal(repo.status(), '');
     } finally { repo.cleanup(); }
   });
@@ -88,5 +90,32 @@ describe('canary per route', () => {
       assert.equal(canary.target, 'test/guard.test.mjs');
       assert.equal(exitCode, 2);
     } finally { repo.cleanup(); }
+  });
+});
+
+describe('printed per-route baseline lines', () => {
+  // Invariant: a route that is not green is printed as NOT GREEN with its own
+  // reason, beside the routes that were -- the reader sees which runner broke.
+  test('a failed routed baseline names the red route on its own line', () => {
+    const group = (route, ran, exitCode, green, detail) => ({
+      route, runner: 'node-test', counts: { passed: ran, failed: 0, skipped: 0, ran }, exitCode, green, detail,
+    });
+    const printed = formatReport({
+      isolation: 'in-place',
+      jobs: 1,
+      adapter: { name: 'routed', grade: 'counted', routes: [] },
+      gates: {
+        baseline: {
+          outcome: 'failed',
+          counts: { passed: 3, failed: 0, skipped: 0, ran: 3 },
+          detail: 'route "web": the command ran ZERO tests (exit 1), so nothing it reports can be trusted',
+          fromCache: false,
+          groups: [group('unit', 3, 0, true, null), group('web', 0, 1, false, 'the command ran ZERO tests (exit 1)')],
+        },
+      },
+      results: [],
+    });
+    assert.match(printed, /\n {12}- unit {2}green {2}3\/0\/0 \(p\/f\/s\), exit 0\n/);
+    assert.match(printed, /\n {12}- web {2}NOT GREEN {2}0\/0\/0 \(p\/f\/s\), exit 1 {2}the command ran ZERO tests \(exit 1\)\n/);
   });
 });

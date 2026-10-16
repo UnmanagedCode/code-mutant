@@ -922,3 +922,33 @@ describe('reported jobs reflects effective concurrency', () => {
     } finally { repo.cleanup(); }
   });
 });
+
+describe('single-runner records carry no routing keys', () => {
+  // Invariant: routing adds fields only to ROUTED reports -- a single-runner
+  // report's every record is shaped exactly as before routing existed.
+  test('no groups or routes on the adapter, baseline, canary, narrow baselines or results', async () => {
+    const repo = makeRepo({ files: guardFiles(), config: { isolation: 'copy' }, label: 'no-routing-keys' });
+    try {
+      // One file-narrowed mutant (a narrow canary) and one names-narrowed (the
+      // baseline half of a mixed canary), so every record shape is produced.
+      const report = await run(repo, [MUTANT, { ...MUTANT, id: 'named', narrowTo: 'names' }]);
+      assert.equal(report.gates.canary.scope, 'mixed');
+      assert.equal('routes' in report.adapter, false);
+      assert.equal('groups' in report.gates.baseline, false);
+      assert.equal('routes' in report.gates.canary, false);
+      for (const scope of report.gates.canary.scopes) assert.equal('routes' in scope, false);
+      assert.ok(report.narrowBaselines.length);
+      for (const entry of report.narrowBaselines) assert.equal('groups' in entry, false);
+      assert.equal(report.results.length, 2);
+      for (const result of report.results) {
+        assert.equal('groups' in result, false);
+        assert.equal('routes' in result.narrowing, false);
+      }
+
+      const baselineOnly = await run(repo, []);
+      assert.equal(baselineOnly.gates.canary.scope, 'baseline');
+      assert.equal('routes' in baselineOnly.gates.canary, false);
+      assert.equal('groups' in baselineOnly.gates.baseline, false);
+    } finally { repo.cleanup(); }
+  });
+});
