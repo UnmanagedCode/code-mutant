@@ -1,0 +1,1 @@
+module-scope-no-newlinein-test-no-newline{"numTotalTestSuites":1}JSON report written to /tmp/code-mutant-capture/reports/vitest-console-noise/vitest.json

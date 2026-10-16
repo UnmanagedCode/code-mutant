@@ -6,5 +6,8 @@
   "description": "Mutation-verified coverage proving — prover-driven mutation testing harness for code-conductor.",
   "scripts": {
     "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "vitest": "5.0.5"
   }
 }

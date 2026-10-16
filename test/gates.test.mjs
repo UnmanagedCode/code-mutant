@@ -749,6 +749,31 @@ describe('narrow baseline (the delta reference, and a second zero-test guard)', 
     } finally { repo.cleanup(); }
   });
 
+  // Invariant: a requested scope file the runner did not run is never a pass --
+  // the scope is non-green, so the mutant is ERROR rather than judged by the
+  // files that did run.
+  test('a scope file the runner reports nothing from makes the scope non-green', async () => {
+    const files = guardFiles();
+    files['test/other.test.mjs'] = "import { test } from 'node:test';\ntest('unrelated', () => {});\n";
+    const repo = makeRepo({ files, config: { runner: 'custom', isolation: 'copy' }, label: 'scope-coverage' });
+    // A parser that reports only the guard file, as a runner whose own discovery
+    // excludes test/other.test.mjs would.
+    write(repo.root, 'harness/mutation/parse.mjs', `export * from ${JSON.stringify(NODE_TEST_MODULE)};
+import { parse as nodeParse } from ${JSON.stringify(NODE_TEST_MODULE)};
+export function parse(stdout, stderr, exitCode) {
+  return { ...nodeParse(stdout, stderr, exitCode), files: ['test/guard.test.mjs'] };
+}
+`);
+    try {
+      const report = await run(repo, [{ ...MUTANT, expectPass: ['test/other.test.mjs::unrelated'] }], {}, { allowDirty: true });
+      const result = report.results[0];
+      assert.equal(result.verdict, Verdict.ERROR);
+      assert.equal(result.reason, Reason.SCOPE_NON_GREEN);
+      assert.match(result.detail, /test\/other\.test\.mjs is in scope but the runner reported no test from it/);
+      assert.equal(report.narrowBaselines[0].green, false);
+    } finally { repo.cleanup(); }
+  });
+
   test('the narrow baseline is memoised per resolved command', async () => {
     const repo = makeRepo({ files: guardFiles(), config: { isolation: 'copy' }, label: 'memo' });
     try {
@@ -894,6 +919,36 @@ describe('reported jobs reflects effective concurrency', () => {
       const adapter = await loadAdapter(config.runner, { configDir: config.configDir });
       const report = await execute({ config, adapter, mutants: [] });
       assert.equal(report.jobs, 1, 'in-place isolation always runs serially, whatever config.jobs claims');
+    } finally { repo.cleanup(); }
+  });
+});
+
+describe('single-runner records carry no routing keys', () => {
+  // Invariant: routing adds fields only to ROUTED reports -- a single-runner
+  // report's every record is shaped exactly as before routing existed.
+  test('no groups or routes on the adapter, baseline, canary, narrow baselines or results', async () => {
+    const repo = makeRepo({ files: guardFiles(), config: { isolation: 'copy' }, label: 'no-routing-keys' });
+    try {
+      // One file-narrowed mutant (a narrow canary) and one names-narrowed (the
+      // baseline half of a mixed canary), so every record shape is produced.
+      const report = await run(repo, [MUTANT, { ...MUTANT, id: 'named', narrowTo: 'names' }]);
+      assert.equal(report.gates.canary.scope, 'mixed');
+      assert.equal('routes' in report.adapter, false);
+      assert.equal('groups' in report.gates.baseline, false);
+      assert.equal('routes' in report.gates.canary, false);
+      for (const scope of report.gates.canary.scopes) assert.equal('routes' in scope, false);
+      assert.ok(report.narrowBaselines.length);
+      for (const entry of report.narrowBaselines) assert.equal('groups' in entry, false);
+      assert.equal(report.results.length, 2);
+      for (const result of report.results) {
+        assert.equal('groups' in result, false);
+        assert.equal('routes' in result.narrowing, false);
+      }
+
+      const baselineOnly = await run(repo, []);
+      assert.equal(baselineOnly.gates.canary.scope, 'baseline');
+      assert.equal('routes' in baselineOnly.gates.canary, false);
+      assert.equal('groups' in baselineOnly.gates.baseline, false);
     } finally { repo.cleanup(); }
   });
 });

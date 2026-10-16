@@ -17,7 +17,7 @@ import process from 'node:process';
 
 import { readFileSync } from 'node:fs';
 
-import { AdapterError, loadAdapter } from './lib/adapters/index.mjs';
+import { AdapterError } from './lib/adapters/index.mjs';
 import { describeDistance, listCandidates } from './lib/candidates.mjs';
 import {
   CatalogError, assertMutationDirIgnored, loadCatalog, requireCatalog, selectById, writeResults,
@@ -26,6 +26,7 @@ import { ConfigError, NoHarnessError, loadConfig } from './lib/config.mjs';
 import { checkCleanTree } from './lib/gates.mjs';
 import { installGuard } from './lib/guard.mjs';
 import { EXIT_CODE_MEANINGS, ExitCode, exitCodeFor, formatReport, toJson } from './lib/report.mjs';
+import { loadHarness } from './lib/routing.mjs';
 import { execute } from './lib/runner.mjs';
 import { SnapshotError } from './lib/snapshot.mjs';
 import { SiteError } from './lib/sites.mjs';
@@ -204,7 +205,22 @@ config.json (harness/mutation/config.json)
   testCommand      Required. Per-mutant command containing a {tests} placeholder.
   runner           Required. node-test | pytest | vitest | dotnet | exit-code |
                    custom. "custom" loads parse.mjs from beside config.json,
-                   exporting parse(stdout, stderr, exitCode).
+                   exporting parse(stdout, stderr, exitCode, context).
+                   vitest reads Vitest's JSON report FILE, so both commands
+                   must pass --reporter=json
+                   --outputFile="$CODE_MUTANT_REPORT_DIR/vitest.json" and run
+                   from the repo root (--config <path> for a nested config).
+                   Every measured command gets a fresh, empty
+                   $CODE_MUTANT_REPORT_DIR outside the tree; what it writes
+                   there reaches parse() as context.reports.
+  routes           Instead of runner/baselineCommand/testCommand (never with
+                   them), for a project with several test runners: an array
+                   of {name, tests, runner, baselineCommand, testCommand}.
+                   A test file belongs to the first route whose "tests" globs
+                   ("*", "**/", no braces) match it; each route's commands
+                   run only for its own files, and the baseline and canary
+                   must hold in every route. Counted adapters whose refs name
+                   files only. See "Routing" in mutants.schema.md.
   isolation        "in-place" (default) or "copy".
   preserve         Paths symlinked into a copy instead of duplicated, e.g.
                    ["node_modules"].
@@ -358,7 +374,7 @@ async function buildContext(flags, log, {
   if (!allowNoCanary && flags['--no-canary']) {
     throw new Error(NO_CANARY_OUT_OF_SCOPE);
   }
-  const config = loadConfig({
+  const { config, adapter } = await loadHarness(loadConfig({
     repoRoot,
     overrides: {
       isolation: isolationOverride(flags),
@@ -366,8 +382,7 @@ async function buildContext(flags, log, {
       baseBranch: allowBaseOverride ? flags['--base'] : undefined,
     },
     warn: (message) => log(`note: ${message}`),
-  });
-  const adapter = await loadAdapter(config.runner, { configDir: config.configDir });
+  }));
   if (allowLearn && flags['--learn'] && adapter.grade === 'exit-code') {
     throw new Error(
       `--learn needs a counted-grade adapter; the ${adapter.name} adapter is exit-code grade and never `

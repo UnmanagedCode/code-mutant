@@ -31,18 +31,30 @@ search for the runner.
    only), and a per-mutant `narrowCommand` is how an exit-code gate gets narrowed. Otherwise match
    the captured output against a shipped adapter:
    - `node-test` — proven end-to-end; use it as-is.
-   - `pytest`, `vitest`, `dotnet` — the parser is pinned to captured fixtures but has never driven
+   - `vitest` — proven end-to-end, and it reads **only** Vitest's JSON report file: both commands
+     must pass `--reporter=json --outputFile="$CODE_MUTANT_REPORT_DIR/vitest.json"` (the runner sets
+     that variable per command) and run from the repo root, selecting a nested config with
+     `--config <path>` — never `cd`, since test references and `{tests}` are repo-relative.
+   - `pytest`, `dotnet` — the parser is pinned to captured fixtures but has never driven
      a full mutate cycle, so check it against the output you just captured rather than assuming it
      fits, and write a `custom` parser instead if it disagrees.
    - Nothing matches — write the `custom` parser. That is the intended path, not a last resort:
      `harness/mutation/parse.mjs` (that exact filename, beside `config.json`) exporting
-     `parse(stdout, stderr, exitCode)` — **plus `canary(source, {file})`, which is required**:
+     `parse(stdout, stderr, exitCode, context)` — **plus `canary(source, {file})`, which is required**:
      without it no canary can be synthesised for any file, and `baseline`, `run` and `probe` all
      refuse the harness pre-flight at exit 2, before measuring anything (`validate` reports it as a
      problem instead, exit 4). Declare
      `testFilePatterns` too, or `mutate.mjs baseline` on its own cannot discover a canary target
      (`run` borrows the mutants' own scopes instead). Full export contract: `code-mutant`'s
      `mutants.schema.md` Appendix B. Prove it against the captured output before finishing.
+
+   **More than one test runner** (a node backend suite and a Vitest frontend suite, say): write
+   `routes` instead of the top-level `runner`/`baselineCommand`/`testCommand` — one route per
+   runner, each with a `name`, its own `runner` and commands, and a `tests` glob list that mirrors
+   that runner's own discovery (Vitest's `include`, say). Only counted adapters whose refs name files
+   can be routed (not `exit-code`, not `dotnet`); each `testCommand` needs `{tests}`; globs take no
+   braces (list `.ts` and `.tsx` separately); a file belongs to the first route that matches it. Full
+   rules: "Routing" in `code-mutant`'s `mutants.schema.md`.
 
    A counted-grade command must exit 0 whenever no test failed: one that chains a lint or guardrail
    step exiting non-zero on its own fails the baseline gate (`outcome: "failed"`), so scope
@@ -81,7 +93,9 @@ search for the runner.
    verify the pattern actually matches via `git status` before the first commit that touches it).
 8. **Verify by running it before you finish.** `mutate.mjs baseline` (without `--no-canary`), invoked as above, must report the
    baseline `passed` **and** the canary `KILLED`; the one exception is an `exit-code`-grade harness,
-   which has no named test to inject and reports `not-established`. Files existing is not "done" —
+   which has no named test to inject and reports `not-established`. A routed harness must show
+   **every route** green under the baseline and the canary `KILLED` in every route (`routes[]` on
+   the canary record). Files existing is not "done" —
    fix `config.json` (or the parser) until the gates read that way, and record the numbers in the
    README per step 6.
 

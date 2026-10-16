@@ -605,3 +605,46 @@ describe('validate does not disturb the catalog contract', () => {
     } finally { repo.cleanup(); }
   });
 });
+
+describe('report-dir-unused', () => {
+  // Invariant: a vitest harness whose commands never name the report dir is
+  // flagged pre-flight -- as a warning, never a problem.
+  test('warns, naming the exact flags, when a vitest command never mentions CODE_MUTANT_REPORT_DIR', async () => {
+    const repo = makeRepo({
+      files: guardFiles(),
+      config: {
+        runner: 'vitest',
+        baselineCommand: 'npx vitest run --reporter=json --outputFile=/dev/stdout',
+        testCommand: 'npx vitest run --reporter=json --outputFile="$CODE_MUTANT_REPORT_DIR/vitest.json" {tests}',
+      },
+      mutants: [GOOD],
+      label: 'validate-report-dir',
+    });
+    try {
+      const { exitCode, report } = await validateJson(repo);
+      const issue = report.issues.find((i) => i.code === 'report-dir-unused');
+      assert.ok(issue, JSON.stringify(report.issues));
+      assert.equal(issue.severity, 'warning');
+      assert.match(issue.detail, /"baselineCommand" never mentions it/);
+      assert.ok(issue.detail.includes('--outputFile="$CODE_MUTANT_REPORT_DIR/vitest.json"'));
+      assert.equal(exitCode, 0);
+    } finally { repo.cleanup(); }
+  });
+
+  test('is silent when both commands name the dir, and for an adapter that reads no report', async () => {
+    const flags = '--reporter=json --outputFile="$CODE_MUTANT_REPORT_DIR/vitest.json"';
+    const vitestRepo = makeRepo({
+      files: guardFiles(),
+      config: { runner: 'vitest', baselineCommand: `npx vitest run ${flags}`, testCommand: `npx vitest run ${flags} {tests}` },
+      mutants: [GOOD],
+      label: 'validate-report-dir-ok',
+    });
+    const nodeRepo = makeRepo({ files: guardFiles(), mutants: [GOOD], label: 'validate-report-dir-node' });
+    try {
+      for (const repo of [vitestRepo, nodeRepo]) {
+        const { report } = await validateJson(repo);
+        assert.equal(report.issues.some((i) => i.code === 'report-dir-unused'), false);
+      }
+    } finally { vitestRepo.cleanup(); nodeRepo.cleanup(); }
+  });
+});

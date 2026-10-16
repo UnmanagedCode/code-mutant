@@ -1,7 +1,9 @@
 {
   "tool": "vitest",
-  "version": "vitest/4.1.10 linux-x64 node-v24.18.0",
-  "command": "/tmp/code-mutant-capture/vt/node_modules/.bin/vitest run --reporter=default",
+  "version": "vitest/5.0.5 linux-x64 node-v24.18.0",
+  "command": "sh -c node node_modules/vitest/vitest.mjs run --reporter=json --outputFile=\"$CODE_MUTANT_REPORT_DIR/vitest.json\"",
+  "cwd": "/tmp/code-mutant-capture/vt",
   "exitCode": 0,
+  "reports": ["vitest.json"],
   "capturedBy": "test/fixtures/capture/capture.sh"
 }

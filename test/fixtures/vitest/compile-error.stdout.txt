@@ -1,10 +1,1 @@
-
- RUN  v4.1.10 /tmp/code-mutant-capture/vt
-
- ❯ test/math.test.js (0 test)
-
- Test Files  1 failed (1)
-      Tests  no tests
-   Start at  20:18:59
-   Duration  131ms (transform 0ms, setup 0ms, import 0ms, tests 0ms, environment 0ms)
-
+JSON report written to /tmp/code-mutant-capture/reports/vitest-compile-error/vitest.json
