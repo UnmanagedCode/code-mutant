@@ -85,7 +85,7 @@ each runner prints is the one a prover should write:
 |---|---|---|
 | `node-test` | `test/guard.test.mjs::allows ollama` — the **leaf** test name, as `node --test` prints it | the file |
 | `pytest` | `tests/test_math.py::TestGroup::test_inner` — a real pytest nodeid | the file |
-| `vitest` | `test/math.test.js::nested > inner failure` — from the JSON report: the file relative to the repo root, then `ancestorTitles` and `title` joined with ` > `. A file that failed to load is the file alone. Requires `--reporter=json --outputFile=/dev/stdout` | the file |
+| `vitest` | `test/math.test.js::nested > inner failure` — from the JSON report: the file relative to the repo root, then `ancestorTitles` and `title` joined with ` > `. A file that failed to load is the file alone. Requires `--reporter=json --outputFile="$CODE_MUTANT_REPORT_DIR/vitest.json"` | the file |
 | `dotnet` | `proj.UnitTest1.Subtracts` — the fully-qualified name. **No file**, because `dotnet test` output carries none | the declaring type (`proj.UnitTest1`) |
 | `exit-code` | not used — there are no named tests | whole command |
 
@@ -222,6 +222,7 @@ Two severities, and the split is a contract you may script against:
 | `ref-shape` | warning | The adapter's references do **not** name files (`dotnet`, `exit-code`) but a reference is written `file::name`. |
 | `refs-ignored` | warning | Exit-code grade with `expectFail`/`expectPass` listed; at that grade the verdict is the command's exit status and those entries are never consulted. Scope with `narrowCommand` instead. |
 | `narrow-downgraded` | warning | `narrowTo: "names"` will not take effect; carries the downgrade reason. |
+| `report-dir-unused` | warning | Adapter-level. The adapter reads its results from the report dir (`vitest`, or a `custom` parser exporting `readsReportDir = true`) but `baselineCommand` or `testCommand` never mentions `CODE_MUTANT_REPORT_DIR`, so the adapter would see zero tests and the baseline gate would fail. Names the required flags. A warning, because a wrapper script can read the variable without the command naming it. |
 
 Nothing reaches the `problem` tier on the strength of a reading of the source — only what the runner
 itself refuses, plus `no-expect-fail`, whose verdicts were observed. A false `problem` blocks a
@@ -770,9 +771,23 @@ and calls:
 export function parse(stdout, stderr, exitCode, context) { … }
 ```
 
-`context` is optional to use and is `{ cwd }`: the absolute root of the workspace the command ran in
-(the copy, under `copy` isolation). A runner that reports absolute paths relativises against it, as
-the shipped `vitest` adapter does.
+`context` is optional to use and is `{ cwd, reports }`:
+
+- `cwd` — the absolute root of the workspace the command ran in (the copy, under `copy` isolation).
+  A runner that reports absolute paths relativises against it, as the shipped `vitest` adapter does.
+- `reports` — `{ <basename>: <text> }`, every regular file the command wrote directly into its
+  **report dir**. Every measured command (baseline, narrow baseline, canary, mutant) gets a fresh,
+  empty directory under the OS temp dir, outside the workspace, exported to it as
+  `$CODE_MUTANT_REPORT_DIR` and removed after `parse` (on the timeout and signal paths too). A runner
+  that writes a machine report to a file is pointed there through the shell, e.g.
+  `--outputFile="$CODE_MUTANT_REPORT_DIR/vitest.json"`. Report bytes count toward the same capture
+  cap as stdout and stderr: over it, the run is truncated — `ERROR` (`output-truncated`), never a
+  verdict — and `reports` is `{}`. `/dev/stdout` is not an alternative: the runner captures through
+  a Unix socket on Linux, which a path-based `open()` cannot write to (`ENXIO`).
+
+An adapter that reads its results from the report dir may declare `export const readsReportDir =
+true` (and `export const REQUIRED_FLAGS = "<flags>"`), so `validate` warns (`report-dir-unused`) when
+a command never mentions `$CODE_MUTANT_REPORT_DIR`.
 
 It must return:
 

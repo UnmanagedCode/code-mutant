@@ -204,7 +204,14 @@ config.json (harness/mutation/config.json)
   testCommand      Required. Per-mutant command containing a {tests} placeholder.
   runner           Required. node-test | pytest | vitest | dotnet | exit-code |
                    custom. "custom" loads parse.mjs from beside config.json,
-                   exporting parse(stdout, stderr, exitCode).
+                   exporting parse(stdout, stderr, exitCode, context).
+                   vitest reads Vitest's JSON report FILE, so both commands
+                   must pass --reporter=json
+                   --outputFile="$CODE_MUTANT_REPORT_DIR/vitest.json" and run
+                   from the repo root (--config <path> for a nested config).
+                   Every measured command gets a fresh, empty
+                   $CODE_MUTANT_REPORT_DIR outside the tree; what it writes
+                   there reaches parse() as context.reports.
   isolation        "in-place" (default) or "copy".
   preserve         Paths symlinked into a copy instead of duplicated, e.g.
                    ["node_modules"].

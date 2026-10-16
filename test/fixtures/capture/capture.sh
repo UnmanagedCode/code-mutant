@@ -33,12 +33,23 @@ capture() {
   local adapter=$1 case=$2 tool=$3 version=$4 dir=$5; shift 6   # shift past the literal --
   local out="$FIX/$adapter"
   mkdir -p "$out"
-  # stdout is a PIPE, as lib/exec.mjs gives every project command -- never a
-  # file: a runner writing its report to /dev/stdout would truncate a file and
-  # drop everything printed before the report.
-  ( cd "$dir" && "$@" ) 2>"$out/$case.stderr.txt" | cat >"$out/$case.stdout.txt"
-  local rc=${PIPESTATUS[0]}
+  # Every command gets a fresh, empty report dir in $CODE_MUTANT_REPORT_DIR, as
+  # lib/reports.mjs gives it under the runner; whatever it writes there is kept
+  # beside the streams as <case>.report.<basename> and named in the meta.
+  local reports="$WORK/reports/$adapter-$case"
+  rm -rf "$reports" && mkdir -p "$reports"
+  rm -f "$out/$case.report."*
+  ( cd "$dir" && CODE_MUTANT_REPORT_DIR="$reports" "$@" ) >"$out/$case.stdout.txt" 2>"$out/$case.stderr.txt"
+  local rc=$?
   local cmd="$*"
+  local names=() f b
+  for f in "$reports"/*; do
+    [ -f "$f" ] || continue
+    b="$(basename "$f")"
+    cp "$f" "$out/$case.report.$b"
+    names+=("\"$b\"")
+  done
+  local joined; joined="$(IFS=,; echo "${names[*]}")"
   cat >"$out/$case.meta.json" <<EOF
 {
   "tool": "$tool",
@@ -46,6 +57,7 @@ capture() {
   "command": "${cmd//\"/\\\"}",
   "cwd": "$dir",
   "exitCode": $rc,
+  "reports": [$joined],
   "capturedBy": "test/fixtures/capture/capture.sh"
 }
 EOF
@@ -166,8 +178,8 @@ EOF
 # -------------------------------------------------------------------- vitest
 # Uses THIS repo's pinned devDependency (package.json), never a fresh `npm i`, so
 # the fixtures come from the exact Vitest the suite's end-to-end tests drive.
-# Every case runs the JSON reporter onto stdout -- the only output the adapter
-# reads.
+# Every case writes the JSON report into the report dir -- the only output the
+# adapter reads -- through the same shell a harness command runs under.
 capture_vitest() {
   echo "vitest:"
   local repo; repo="$(cd "$FIX/../.." && pwd)"
@@ -177,7 +189,7 @@ capture_vitest() {
   printf '{"name":"vt-fixture","private":true,"type":"module"}\n' >"$d/package.json"
   ln -s "$repo/node_modules" "$d/node_modules"
   local v; v="$(node "$entry" --version 2>&1 | head -1)"
-  local vt=(node node_modules/vitest/vitest.mjs run --reporter=json --outputFile=/dev/stdout)
+  local vt='node node_modules/vitest/vitest.mjs run --reporter=json --outputFile="$CODE_MUTANT_REPORT_DIR/vitest.json"'
 
   cat >"$d/test/math.test.js" <<'EOF'
 import { test, expect } from 'vitest';
@@ -185,7 +197,7 @@ import { test, expect } from 'vitest';
 test('adds', () => { expect(1 + 1).toBe(2); });
 test('subtracts', () => { expect(2 - 1).toBe(1); });
 EOF
-  capture vitest pass vitest "$v" "$d" -- "${vt[@]}"
+  capture vitest pass vitest "$v" "$d" -- sh -c "$vt"
 
   cat >"$d/test/math.test.js" <<'EOF'
 import { test, describe, expect } from 'vitest';
@@ -196,7 +208,7 @@ describe('nested', () => {
   test('inner failure', () => { throw new Error('boom'); });
 });
 EOF
-  capture vitest fail vitest "$v" "$d" -- "${vt[@]}"
+  capture vitest fail vitest "$v" "$d" -- sh -c "$vt"
 
   cat >"$d/test/math.test.js" <<'EOF'
 import { test, expect } from 'vitest';
@@ -205,7 +217,7 @@ test('adds', () => { expect(1 + 1).toBe(2); });
 test.skip('skipped for a reason', () => {});
 test.todo('todo item');
 EOF
-  capture vitest skip vitest "$v" "$d" -- "${vt[@]}"
+  capture vitest skip vitest "$v" "$d" -- sh -c "$vt"
 
   # A file that fails to transform, beside one that passes: the load failure
   # must surface without hiding the passing file's counts.
@@ -218,7 +230,7 @@ EOF
 import { test } from 'vitest';
 this is not valid javascript (
 EOF
-  capture vitest compile-error vitest "$v" "$d" -- "${vt[@]}"
+  capture vitest compile-error vitest "$v" "$d" -- sh -c "$vt"
   rm "$d/test/broken.test.js"
 
   # Test-emitted stdout around the report: console output, a raw write with no
@@ -243,7 +255,7 @@ describe('nested', () => {
   test('inner failure', () => { throw new Error('boom'); });
 });
 EOF
-  capture vitest console-noise vitest "$v" "$d" -- "${vt[@]}"
+  capture vitest console-noise vitest "$v" "$d" -- sh -c "$vt"
 
   # A report far larger than a pipe buffer (64 KiB): 2000 tests with long
   # titles, exactly one failing.
@@ -256,7 +268,7 @@ for (let i = 0; i < 2000; i += 1) {
 }
 test('the one failure', () => { expect(1).toBe(2); });
 EOF
-  capture vitest large vitest "$v" "$d" -- "${vt[@]}"
+  capture vitest large vitest "$v" "$d" -- sh -c "$vt"
 
   # A file filter matching no file: Vitest exits 1 with an empty report.
   cat >"$d/test/math.test.js" <<'EOF'
@@ -264,7 +276,7 @@ import { test, expect } from 'vitest';
 
 test('adds', () => { expect(1 + 1).toBe(2); });
 EOF
-  capture vitest no-files vitest "$v" "$d" -- "${vt[@]}" test/no-such-file.test.js
+  capture vitest no-files vitest "$v" "$d" -- sh -c "$vt test/no-such-file.test.js"
 
   # An error thrown outside any test after it passed: every test passes and
   # Vitest still exits 1.
@@ -277,7 +289,7 @@ test('adds', () => {
 });
 test('waits', async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
 EOF
-  capture vitest unhandled-error vitest "$v" "$d" -- "${vt[@]}"
+  capture vitest unhandled-error vitest "$v" "$d" -- sh -c "$vt"
 }
 
 # -------------------------------------------------------------------- dotnet

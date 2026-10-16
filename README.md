@@ -93,7 +93,7 @@ for a gate that emits no counts at all, `"exit-code"` reads the exit status alon
 signal grade; see [Narrowing and signal grades](#narrowing-and-signal-grades)). The intended
 extension path is **`custom`: you write your own.** A project points `runner` at
 `"custom"`, drops a `parse.mjs` beside its `config.json` exporting
-`parse(stdout, stderr, exitCode)`, and proves it against output it captured from its own suite. The
+`parse(stdout, stderr, exitCode, context)`, and proves it against output it captured from its own suite. The
 full export contract is specified in [`mutants.schema.md`](mutants.schema.md) (Appendix B). Adapters
 that prove themselves useful across projects are the candidates for being pulled up into the plugin
 later — that is how this list is meant to grow.
@@ -102,8 +102,16 @@ The shipped adapters are conveniences that happen to exist already, and they are
 
 | `runner` | Status |
 |---|---|
-| `node-test`, `exit-code` | **Proven.** Both are driven end-to-end by this project's test suite — real commands, real temp git repos, the full mutate cycle. These are the pair in active use. |
-| `pytest`, `vitest`, `dotnet` | **Parser-pinned only.** Each parser is tested against stdout/stderr captured from a real toolchain run (see [`test/fixtures/PROVENANCE.md`](test/fixtures/PROVENANCE.md)), so it parses real output rather than a guess at the format. But no full mutate cycle has ever been run against a real project on those stacks. Treat them as a starting point to verify, not as supported. |
+| `node-test`, `exit-code`, `vitest` | **Proven.** Each is driven end-to-end by this project's test suite — real commands, real temp git repos, the full mutate cycle (`vitest` against the pinned Vitest devDependency, `test/vitest-e2e.test.mjs`). |
+| `pytest`, `dotnet` | **Parser-pinned only.** Each parser is tested against stdout/stderr captured from a real toolchain run (see [`test/fixtures/PROVENANCE.md`](test/fixtures/PROVENANCE.md)), so it parses real output rather than a guess at the format. But no full mutate cycle has ever been run against a real project on those stacks. Treat them as a starting point to verify, not as supported. |
+
+**`vitest` reads Vitest's JSON report file, nothing else.** Both commands must pass
+`--reporter=json --outputFile="$CODE_MUTANT_REPORT_DIR/vitest.json"` and run from the repo root —
+a nested Vitest config is selected with `--config <path>`, never by `cd`-ing into it. Every measured
+command gets a fresh, empty `$CODE_MUTANT_REPORT_DIR` outside the tree (`lib/reports.mjs`); a
+command that writes no report there reads as zero tests, so its baseline fails naming the flags, and
+`validate` warns (`report-dir-unused`). `--outputFile=/dev/stdout` does not work under the runner
+(its captured stdout is a socket, which Vitest cannot open by path).
 
 Those five are the whole shipped set; anything else — Rust included — is a `custom` parser. Why one
 is not shipped for a given stack is recorded in

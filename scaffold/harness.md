@@ -31,12 +31,16 @@ search for the runner.
    only), and a per-mutant `narrowCommand` is how an exit-code gate gets narrowed. Otherwise match
    the captured output against a shipped adapter:
    - `node-test` — proven end-to-end; use it as-is.
-   - `pytest`, `vitest`, `dotnet` — the parser is pinned to captured fixtures but has never driven
+   - `vitest` — proven end-to-end, and it reads **only** Vitest's JSON report file: both commands
+     must pass `--reporter=json --outputFile="$CODE_MUTANT_REPORT_DIR/vitest.json"` (the runner sets
+     that variable per command) and run from the repo root, selecting a nested config with
+     `--config <path>` — never `cd`, since test references and `{tests}` are repo-relative.
+   - `pytest`, `dotnet` — the parser is pinned to captured fixtures but has never driven
      a full mutate cycle, so check it against the output you just captured rather than assuming it
      fits, and write a `custom` parser instead if it disagrees.
    - Nothing matches — write the `custom` parser. That is the intended path, not a last resort:
      `harness/mutation/parse.mjs` (that exact filename, beside `config.json`) exporting
-     `parse(stdout, stderr, exitCode)` — **plus `canary(source, {file})`, which is required**:
+     `parse(stdout, stderr, exitCode, context)` — **plus `canary(source, {file})`, which is required**:
      without it no canary can be synthesised for any file, and `baseline`, `run` and `probe` all
      refuse the harness pre-flight at exit 2, before measuring anything (`validate` reports it as a
      problem instead, exit 4). Declare

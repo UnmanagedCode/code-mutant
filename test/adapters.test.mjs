@@ -15,7 +15,6 @@ import {
   AdapterError, SHIPPED_ADAPTERS, loadAdapter, missingCanaryExports,
 } from '../lib/adapters/index.mjs';
 import { stripAnsi } from '../lib/adapters/common.mjs';
-import { extractReport } from '../lib/adapters/vitest.mjs';
 import { Reason, Verdict, classify } from '../lib/classify.mjs';
 import { isGreen } from '../lib/measure.mjs';
 
@@ -30,6 +29,11 @@ function fixture(adapter, name) {
     meta,
     stdout: readFileSync(`${base}.stdout.txt`, 'utf8'),
     stderr: readFileSync(`${base}.stderr.txt`, 'utf8'),
+    // What the command wrote into its report dir, keyed by basename -- the map
+    // the runner hands parse() as `context.reports`.
+    reports: Object.fromEntries((meta.reports ?? []).map((name) => [
+      name, readFileSync(`${base}.report.${name}`, 'utf8'),
+    ])),
   };
 }
 
@@ -37,8 +41,8 @@ function fixture(adapter, name) {
 // runner would pass, against which vitest's absolute paths are relativised.
 function parseFixture(adapterName, caseName) {
   const adapter = SHIPPED_ADAPTERS[adapterName];
-  const { stdout, stderr, meta } = fixture(adapterName, caseName);
-  return { result: adapter.parse(stdout, stderr, meta.exitCode, { cwd: meta.cwd }), meta };
+  const { stdout, stderr, meta, reports } = fixture(adapterName, caseName);
+  return { result: adapter.parse(stdout, stderr, meta.exitCode, { cwd: meta.cwd, reports }), meta };
 }
 
 // Every counted case across every shipped adapter, with the numbers the real run
@@ -134,26 +138,28 @@ for (const [adapterName, cases] of Object.entries(EXPECTATIONS)) {
   });
 }
 
-describe('vitest JSON report on stdout', () => {
+describe('vitest JSON report file', () => {
   const vitest = SHIPPED_ADAPTERS.vitest;
-  const parseWith = (stdout, exitCode, cwd) => vitest.parse(stdout, '', exitCode, { cwd });
+  const parseWith = (report, exitCode, cwd, stdout = '') => vitest.parse(
+    stdout, '', exitCode, { cwd, reports: report === null ? {} : { 'vitest.json': report } },
+  );
 
-  // Invariant: test-emitted stdout -- a raw write with no newline, a decoy report
-  // prefix -- cannot change the parsed report.
-  test('test-emitted stdout before the report cannot change it', () => {
-    const { stdout, meta } = fixture('vitest', 'console-noise');
-    assert.ok(stdout.startsWith('module-scope-no-newline'), 'the capture really carries leading noise');
-    assert.ok(stdout.includes('{"numTotalTestSuites":1}{"numTotalTestSuites":'), 'and the decoy, unterminated by a newline');
-    assert.ok(stdout.trimEnd().endsWith('JSON report written to /dev/stdout'), 'and the trailing logger line');
-    const noisy = parseWith(stdout, meta.exitCode, meta.cwd);
-    const clean = parseWith(stdout.slice(stdout.lastIndexOf('{"numTotalTestSuites":')), meta.exitCode, meta.cwd);
-    assert.deepEqual(noisy, clean);
+  // Invariant: test-emitted stdout -- console output, raw writes with no
+  // newline, a decoy report prefix -- is irrelevant to the parse.
+  test('stdout noise cannot change the parsed report', () => {
+    const { stdout, meta, reports } = fixture('vitest', 'console-noise');
+    assert.ok(stdout.includes('module-scope-no-newline') && stdout.includes('{"numTotalTestSuites":1}'),
+      'the capture really carries noise and a decoy on stdout');
+    assert.deepEqual(
+      parseWith(reports['vitest.json'], meta.exitCode, meta.cwd, stdout),
+      parseWith(reports['vitest.json'], meta.exitCode, meta.cwd, ''),
+    );
   });
 
-  // Invariant: a report larger than the pipe buffer parses intact.
+  // Invariant: a large report file parses intact.
   test('a report far larger than a pipe buffer parses intact', () => {
-    const { stdout } = fixture('vitest', 'large');
-    assert.ok(Buffer.byteLength(stdout) > 65_536, `fixture is ${Buffer.byteLength(stdout)} bytes`);
+    const { reports } = fixture('vitest', 'large');
+    assert.ok(Buffer.byteLength(reports['vitest.json']) > 65_536, 'the report is over 64 KiB');
     const { result } = parseFixture('vitest', 'large');
     assert.equal(result.diagnostic, null);
     assert.equal(result.ran, 2001);
@@ -173,32 +179,34 @@ describe('vitest JSON report on stdout', () => {
     assert.equal(verdict.reason, Reason.UNEXPLAINED_EXIT);
   });
 
-  // Invariant: a text-reporter config fails loudly, naming the flags it needs.
-  test('text-reporter output is zero tests plus a diagnostic naming the JSON flags', () => {
+  // Invariant: a command that writes no report -- the text reporter, or a JSON
+  // reporter aimed anywhere but the report dir -- fails loudly, naming the flags.
+  test('no report file is zero tests plus a diagnostic naming the exact flags', () => {
     const text = ' RUN  v5.0.5 /repo\n\n ✓ test/math.test.js (2 tests) 2ms\n\n Test Files  1 passed (1)\n      Tests  2 passed (2)\n';
-    const result = parseWith(text, 0, '/repo');
+    const result = parseWith(null, 0, '/repo', text);
     assert.equal(result.ran, 0);
-    assert.match(result.diagnostic, /--reporter=json --outputFile=\/dev\/stdout/);
+    assert.ok(result.diagnostic.includes('--reporter=json --outputFile="$CODE_MUTANT_REPORT_DIR/vitest.json"'), result.diagnostic);
     assert.equal(isGreen({ run: { exitCode: 0 }, parsed: result }), false);
   });
 
   describe('a damaged report never yields a graded verdict from it', () => {
-    const { stdout, meta } = fixture('vitest', 'fail');
+    const { meta, reports } = fixture('vitest', 'fail');
+    const report = reports['vitest.json'];
     const expectFail = ['test/math.test.js::subtracts', 'test/math.test.js::nested > inner failure'];
     const damaged = (from, to) => {
-      assert.ok(stdout.includes(from), `fixture carries ${from}`);
-      return stdout.replace(from, to);
+      assert.ok(report.includes(from), `fixture carries ${from}`);
+      return report.replace(from, to);
     };
 
     test('the undamaged report grades KILLED (the control)', () => {
-      const parsed = parseWith(stdout, meta.exitCode, meta.cwd);
+      const parsed = parseWith(report, meta.exitCode, meta.cwd);
       assert.equal(classify({ run: { exitCode: meta.exitCode }, parsed, expectFail }).verdict, Verdict.KILLED);
     });
 
     test('truncated JSON is unreadable', () => {
-      const parsed = parseWith(stdout.slice(0, Math.floor(stdout.length / 2)), meta.exitCode, meta.cwd);
+      const parsed = parseWith(report.slice(0, Math.floor(report.length / 2)), meta.exitCode, meta.cwd);
       assert.equal(parsed.ran, 0);
-      assert.match(parsed.diagnostic, /no Vitest JSON report/);
+      assert.match(parsed.diagnostic, /Vitest JSON report is unreadable/);
       assert.equal(classify({ run: { exitCode: meta.exitCode }, parsed, expectFail }).verdict, Verdict.ERROR);
     });
 
@@ -226,23 +234,17 @@ describe('vitest JSON report on stdout', () => {
     });
   });
 
-  test('extractReport skips a decoy and finds the real report after it', () => {
-    const report = extractReport('{"numTotalTestSuites":1}noise{"numTotalTestSuites":0,"testResults":[]}JSON report written');
-    assert.deepEqual(report, { numTotalTestSuites: 0, testResults: [] });
-    assert.equal(extractReport('nothing here'), null);
-  });
-
   // Invariant: ids are repo-relative against the workspace the command ran in --
   // which in copy mode is the copy, not the real tree.
   test('absolute file paths are relativised against context.cwd only', () => {
-    const { stdout, meta } = fixture('vitest', 'fail');
-    const ids = (cwd) => parseWith(stdout, meta.exitCode, cwd).failedTests.map((t) => t.id);
+    const { meta, reports } = fixture('vitest', 'fail');
+    const ids = (cwd) => parseWith(reports['vitest.json'], meta.exitCode, cwd).failedTests.map((t) => t.id);
     assert.deepEqual(ids(meta.cwd), ['test/math.test.js::subtracts', 'test/math.test.js::nested > inner failure']);
     assert.deepEqual(ids(undefined), [
       `${meta.cwd}/test/math.test.js::subtracts`, `${meta.cwd}/test/math.test.js::nested > inner failure`,
     ]);
     assert.deepEqual(ids('/some/other/root'), ids(undefined));
-    assert.deepEqual(parseWith(stdout, meta.exitCode, meta.cwd).files, ['test/math.test.js']);
+    assert.deepEqual(parseWith(reports['vitest.json'], meta.exitCode, meta.cwd).files, ['test/math.test.js']);
   });
 
   test('the names-mode -t pattern selects the named test and not a sibling that extends it', () => {
