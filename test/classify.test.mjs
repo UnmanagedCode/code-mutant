@@ -114,6 +114,17 @@ describe('counted mode', () => {
     assert.equal(result.reason, Reason.UNEXPLAINED_EXIT);
   });
 
+  // Invariant: the adapter's own reason for reading nothing reaches the reader.
+  test('a zero-test scope carries the adapter diagnostic in its detail', () => {
+    const result = classify({
+      run: OK_RUN,
+      parsed: { ...counted({ passed: 0, ran: 0 }), diagnostic: 'no report: pass --reporter=json' },
+      expectFail: ['t.mjs::a'],
+    });
+    assert.equal(result.reason, Reason.SCOPE_EMPTY);
+    assert.match(result.detail, /zero tests.* -- no report: pass --reporter=json$/);
+  });
+
   test('a zero-test scope keeps scope-empty even when the command also exited non-zero', () => {
     // Pins the ordering: the unexplained-exit guard must not shadow the more
     // specific zero-test diagnosis.

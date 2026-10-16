@@ -767,8 +767,12 @@ See [Pre-flight validation](#pre-flight-validation) for the per-code severity ta
 and calls:
 
 ```js
-export function parse(stdout, stderr, exitCode) { … }
+export function parse(stdout, stderr, exitCode, context) { … }
 ```
+
+`context` is optional to use and is `{ cwd }`: the absolute root of the workspace the command ran in
+(the copy, under `copy` isolation). A runner that reports absolute paths relativises against it, as
+the shipped `vitest` adapter does.
 
 It must return:
 
@@ -780,6 +784,8 @@ It must return:
 | `failedTests` | `[{ file, name, id }]` | `id` is what `expectFail`/`expectPass` are compared against. |
 | `compileError` | boolean | True for a build/module-load break. Yields `IMPRECISE`. Never guess it from an exit code alone. |
 | `counts` | object | Free-form extras, carried into the report. |
+| `files` | `[string]`, optional | The repo-relative test files the run reported. When present, every file a narrowed scope names must appear in it, or that scope's narrow baseline is non-green (`"<file> is in scope but the runner reported no test from it (outside its include?)"`) and its mutants are `ERROR` (`scope-non-green`). Absent, no such check is made. |
+| `diagnostic` | string \| null, optional | Why the parser read nothing, when it read nothing (e.g. no report on stdout). Appended to the zero-tests detail of a baseline, a narrow baseline and a `scope-empty` result. |
 
 **The adapter's grade is a module-level export**, separate from the `grade` field `parse()` returns:
 

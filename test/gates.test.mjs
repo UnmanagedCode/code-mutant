@@ -749,6 +749,31 @@ describe('narrow baseline (the delta reference, and a second zero-test guard)', 
     } finally { repo.cleanup(); }
   });
 
+  // Invariant: a requested scope file the runner did not run is never a pass --
+  // the scope is non-green, so the mutant is ERROR rather than judged by the
+  // files that did run.
+  test('a scope file the runner reports nothing from makes the scope non-green', async () => {
+    const files = guardFiles();
+    files['test/other.test.mjs'] = "import { test } from 'node:test';\ntest('unrelated', () => {});\n";
+    const repo = makeRepo({ files, config: { runner: 'custom', isolation: 'copy' }, label: 'scope-coverage' });
+    // A parser that reports only the guard file, as a runner whose own discovery
+    // excludes test/other.test.mjs would.
+    write(repo.root, 'harness/mutation/parse.mjs', `export * from ${JSON.stringify(NODE_TEST_MODULE)};
+import { parse as nodeParse } from ${JSON.stringify(NODE_TEST_MODULE)};
+export function parse(stdout, stderr, exitCode) {
+  return { ...nodeParse(stdout, stderr, exitCode), files: ['test/guard.test.mjs'] };
+}
+`);
+    try {
+      const report = await run(repo, [{ ...MUTANT, expectPass: ['test/other.test.mjs::unrelated'] }], {}, { allowDirty: true });
+      const result = report.results[0];
+      assert.equal(result.verdict, Verdict.ERROR);
+      assert.equal(result.reason, Reason.SCOPE_NON_GREEN);
+      assert.match(result.detail, /test\/other\.test\.mjs is in scope but the runner reported no test from it/);
+      assert.equal(report.narrowBaselines[0].green, false);
+    } finally { repo.cleanup(); }
+  });
+
   test('the narrow baseline is memoised per resolved command', async () => {
     const repo = makeRepo({ files: guardFiles(), config: { isolation: 'copy' }, label: 'memo' });
     try {
