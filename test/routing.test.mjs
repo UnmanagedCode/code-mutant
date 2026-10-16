@@ -44,6 +44,17 @@ function envelope(groups) {
   })}\n`;
 }
 
+// Reaped or a zombie: either way no longer running. Polled briefly, since a
+// SIGKILLed process is reaped asynchronously.
+async function stillRunning(pid) {
+  const running = () => {
+    const status = `/proc/${pid}/status`;
+    return existsSync(status) && !/^State:\s+Z/m.test(readFileSync(status, 'utf8'));
+  };
+  for (let i = 0; i < 50 && running(); i += 1) await new Promise((r) => { setTimeout(r, 20); });
+  return running();
+}
+
 const RUN = { exitCode: 1, timedOut: false, truncated: false, outputIncomplete: false, spawnError: null, durationMs: 5 };
 
 describe('the routed adapter', () => {
@@ -193,13 +204,34 @@ describe('the route driver', () => {
       assert.equal(outcome.run.timedOut, true);
       assert.equal(liveChildCount(), 0);
       const pid = Number(readFileSync(pidFile, 'utf8'));
-      // Reaped or a zombie: either way it is no longer running.
-      const running = () => {
-        const status = `/proc/${pid}/status`;
-        return existsSync(status) && !/^State:\s+Z/m.test(readFileSync(status, 'utf8'));
-      };
-      for (let i = 0; i < 50 && running(); i += 1) await new Promise((r) => { setTimeout(r, 20); });
-      assert.equal(running(), false, `grandchild ${pid} survived the group kill`);
+      assert.equal(await stillRunning(pid), false, `grandchild ${pid} survived the group kill`);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  // Invariant: a route that leaves a process holding its inherited stdout
+  // cannot pin the driver -- the run settles on the drain grace, honestly
+  // reported as output-incomplete for that route, never as a timeout at the
+  // full deadline -- and the holder dies with the runner's group once the
+  // outer run ends.
+  test('a route leaving a stdout holder behind settles as output-incomplete, not a timeout', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'code-mutant-route-holder-'));
+    const pidFile = path.join(root, 'holder.pid');
+    try {
+      const { adapter } = await harness();
+      // The shell exits at once; the backgrounded node keeps its stdout.
+      const leak = `node -e 'setInterval(() => {}, 1000)' & echo $! > '${pidFile}'`;
+      const command = compileRoutedCommand([['unit', leak]]);
+      const config = { timeoutMs: 30_000, hang: { factor: 10, floorMs: 0 }, setup: null, teardown: null };
+      const outcome = await measure({ command, config, adapter, workspace: { root }, deadlineMs: 15_000 });
+      assert.equal(outcome.run.timedOut, false, 'the driver was pinned until the deadline');
+      assert.ok(outcome.run.durationMs < 8_000, `settled after ${Math.round(outcome.run.durationMs)}ms`);
+      const [group] = outcome.parsed.groups;
+      assert.equal(group.run.outputIncomplete, true);
+      const verdict = classify({ run: outcome.run, parsed: outcome.parsed, expectFail: ['test/a.test.mjs::x'] });
+      assert.equal(verdict.reason, Reason.OUTPUT_INCOMPLETE);
+      assert.match(verdict.detail, /^route "unit": /);
+      const pid = Number(readFileSync(pidFile, 'utf8'));
+      assert.equal(await stillRunning(pid), false, `holder ${pid} outlived the run`);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
