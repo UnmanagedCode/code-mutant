@@ -479,6 +479,17 @@ run, and an unconfigured project from a clean sweep; the full table is in
 A scaffolded project documents how to invoke the harness for itself in its own
 `harness/mutation/README.md`, written against the commands that project is actually tested with.
 
+## Development
+
+- **Prerequisite:** `npm ci` once, then `npm test` (`node --test test/*.test.mjs`).
+- `vitest` is an exact-pinned **devDependency** (`package.json`, locked by `package-lock.json`),
+  used only by this repo's own suite to drive real Vitest runs. The Vitest end-to-end tests
+  **fail** — they do not skip — when it is not installed.
+- **The runtime has no dependencies.** A user's install is a `git clone` with no install step, so
+  `node_modules/` never exists there; `mutate.mjs` and `lib/` import only `node:` builtins and
+  relative paths, pinned by `test/runtime-deps.test.mjs`. Any install hook added for this plugin
+  must be `npm install --omit=dev`.
+
 ## License
 
 This project is licensed under the GNU Affero General Public License v3.0 or later
