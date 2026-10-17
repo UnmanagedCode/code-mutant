@@ -154,8 +154,9 @@ writes `routes` in `config.json` instead of the top-level `runner`/`baselineComm
 `--learn`'s no-refs whole-suite fallback never runs an opt-in route. Its failures are still `LEARNED`; a result where nothing failed `ERROR`s with `opt-in-not-run` (naming the unrun routes) instead of reading `SURVIVED`, and the mutant needs a ref in an opt-in route's files to test them.
 
 An opt-in route declared before a non-opt-in route owns every file both match (first match wins),
-so the later route's `baselineCommand` never runs those files and the baseline-scope canary can find
-no candidate there: it FAILS, closed. `validate` reports it as `route-overlap`.
+and the baseline no longer runs its pair. The later route's baseline-scope canary therefore relies on
+that route's own `baselineCommand` running the shared file; if it does not, the canary has no
+candidate there and FAILS, closed. `validate` reports the overlap as `route-overlap`.
 
 **Ref → route:** a test reference routes by its file part to the **first** route, in declared
 order, whose `tests` match it. A ref matching no route is refused for that mutant (`plan-failed`

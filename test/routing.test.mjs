@@ -493,7 +493,7 @@ describe('validate, opt-in routes', () => {
     try {
       const report = JSON.parse((await runCli(['validate', '--json'], { cwd: repo.root })).stdout);
       const [overlap] = report.issues.filter((i) => i.code === 'route-overlap');
-      assert.match(overlap.detail, /"slow" is opt-in, so the baseline never runs test\/guard\.test\.mjs.*fails \(closed\)/);
+      assert.match(overlap.detail, /"slow" is opt-in, so its pair no longer runs test\/guard\.test\.mjs in the baseline.*relies on that route\'s own baselineCommand running test\/guard\.test\.mjs; if it does not.*fails \(closed\)/);
     } finally { repo.cleanup(); }
   });
 

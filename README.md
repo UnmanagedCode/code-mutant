@@ -223,7 +223,7 @@ named tests would make "a failure outside `expectFail`" unobservable by construc
 per-mutant `narrowCommand` can override it. Every verdict is labeled with which grade produced it,
 since an exit-code kill is not the same precision as a counted kill. `--learn` reads
 `expectFail`/`expectPass` as scope hints only, never grades against them, and falls back to
-`baselineCommand` (the whole suite) when a mutant names no ref at all — discovery has no scope to
+`baselineCommand` (the whole non-opt-in suite) when a mutant names no ref at all — discovery has no scope to
 narrow to. **The canary gate follows the narrowing**: the command that judges a mutant is the command
 the canary is established against (see the canary bullet under [Three trust
 gates](#three-trust-gates)).
