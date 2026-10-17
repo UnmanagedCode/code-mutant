@@ -198,7 +198,9 @@ NARROWING
   In exit-code mode there is no substitution -- the whole gate command runs. A
   per-mutant "narrowCommand" overrides the substituted testCommand entirely.
   --learn with no expectFail/expectPass at all falls back to baselineCommand
-  (the whole suite) rather than refusing, since discovery has no scope to narrow.
+  (the whole suite) rather than refusing, since discovery has no scope to narrow;
+  under "routes" that fallback never runs an opt-in route, so
+  a result where nothing failed is an ERROR (opt-in-not-run), not a SURVIVED.
 
 config.json (harness/mutation/config.json)
   baselineCommand  Required. The project's real "run everything" command.
@@ -215,12 +217,17 @@ config.json (harness/mutation/config.json)
                    there reaches parse() as context.reports.
   routes           Instead of runner/baselineCommand/testCommand (never with
                    them), for a project with several test runners: an array
-                   of {name, tests, runner, baselineCommand, testCommand}.
+                   of {name, tests, runner, baselineCommand, testCommand,
+                   optIn}.
                    A test file belongs to the first route whose "tests" globs
                    ("*", "**/", no braces) match it; each route's commands
                    run only for its own files, and the baseline and canary
-                   must hold in every route. Counted adapters whose refs name
-                   files only. See "Routing" in mutants.schema.md.
+                   must hold in every non-opt-in route. Counted adapters whose refs name
+                   files only. A route with "optIn": true (no baselineCommand)
+                   is skipped by the baseline and the baseline-scope canary
+                   and runs only when a ref names one of its files, with the
+                   full narrow gates; at least one route must not be opt-in.
+                   See "Routing" in mutants.schema.md.
   isolation        "in-place" (default) or "copy".
   preserve         Paths symlinked into a copy instead of duplicated, e.g.
                    ["node_modules"].
@@ -254,8 +261,10 @@ TRUST GATES
   canary             Synthesised per run, never committed. Run against each
                      command that JUDGES a mutant (its narrowed scope), once per
                      distinct scope, and against baselineCommand for anything
-                     that cannot be soundly narrowed -- all six conditions:
-                     names narrowing, a per-mutant narrowCommand, exit-code
+                     that cannot be soundly narrowed -- these conditions:
+                     names narrowing, a per-mutant narrowCommand (both are
+                     refused instead, canary-not-established, when the command
+                     runs an opt-in route), exit-code
                      grade, an adapter whose refs do not name files (dotnet, or
                      a custom parser with its own scopeOf), a testCommand with
                      no {tests}, a narrow command identical to baselineCommand

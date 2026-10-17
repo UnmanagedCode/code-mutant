@@ -95,6 +95,19 @@ describe('the routed adapter', () => {
     assert.equal(config.baselineCommand, compileRoutedCommand([['unit', 'node --test test/'], ['web', 'node --test web/']]));
   });
 
+  // Invariant: the compiled baseline runs only non-opt-in routes, while an opt-in
+  // ref still narrows to that route alone.
+  test('an opt-in route is left out of the baseline and still runs for its own ref', async () => {
+    const optIn = { name: 'e2e', tests: ['e2e/*.spec.mjs'], runner: 'node-test', testCommand: 'node --test {tests}', optIn: true };
+    const { adapter, config } = await harness([...ROUTES, optIn]);
+    assert.equal(config.baselineCommand, compileRoutedCommand([['unit', 'node --test test/'], ['web', 'node --test web/']]));
+    const narrowing = planNarrowing({
+      mutant: { id: 'm', expectFail: ['e2e/a.spec.mjs::x'] }, adapter, testCommand: config.testCommand,
+    });
+    assert.deepEqual(narrowing.routes, ['e2e']);
+    assert.equal(narrowing.command, compileRoutedCommand([['e2e', "node --test 'e2e/a.spec.mjs'"]]));
+  });
+
   test('no envelope reads as zero tests with a diagnostic, never green', async () => {
     const { adapter } = await harness();
     const parsed = adapter.parse('', 'boom\n', 1, {});
@@ -454,6 +467,83 @@ describe('validate, routed', () => {
       const stray = report.mutants[0].issues.find((i) => i.code === 'no-narrow-scope');
       assert.equal(stray.severity, 'problem');
       assert.match(stray.detail, /lib\/elsewhere\.test\.mjs matches no route's tests/);
+      assert.equal(result.exitCode, 4);
+    } finally { repo.cleanup(); }
+  });
+});
+
+const unattested0 = (m) => m.issues.find((i) => i.code === 'opt-in-unattested').detail;
+
+describe('validate, opt-in routes', () => {
+  // Invariant: an overlap won by an opt-in route says the later route's
+  // baseline-scope canary fails closed there.
+  test('route-overlap names the opt-in shadowing consequence', async () => {
+    const repo = makeRepo({
+      files: guardFiles(),
+      config: {
+        baselineCommand: undefined, testCommand: undefined, runner: undefined,
+        routes: [
+          { name: 'slow', tests: ['test/*.test.mjs'], runner: 'node-test', testCommand: 'node --test {tests}', optIn: true },
+          { name: 'unit', tests: ['test/*.test.mjs'], runner: 'node-test', baselineCommand: 'node --test', testCommand: 'node --test {tests}' },
+        ],
+      },
+      mutants: [],
+      label: 'routing-validate-shadow',
+    });
+    try {
+      const report = JSON.parse((await runCli(['validate', '--json'], { cwd: repo.root })).stdout);
+      const [overlap] = report.issues.filter((i) => i.code === 'route-overlap');
+      assert.match(overlap.detail, /"slow" is opt-in, so its pair no longer runs test\/guard\.test\.mjs in the baseline.*relies on that route\'s own baselineCommand running test\/guard\.test\.mjs; if it does not, that candidate cannot observe the break and, with no other, the canary fails \(closed\)/);
+    } finally { repo.cleanup(); }
+  });
+
+  // Invariant: an opt-in route is judged on its own terms -- no baselineCommand to
+  // name, never-runs wording for unmatched tests, and a mutant `run` would refuse
+  // (NAMES on an opt-in file) is a problem while the plain one is clean.
+  test('opt-in wording, no baselineCommand blame, and opt-in-unattested only for names', async () => {
+    const files = guardFiles();
+    files['e2e/a.spec.mjs'] = "import { test } from 'node:test';\ntest('a', () => {});\n";
+    const site = { file: 'src/guard.mjs', anchor: "return kind === 'user-defined';", replacement: 'return false;' };
+    const repo = makeRepo({
+      files,
+      config: {
+        baselineCommand: undefined,
+        testCommand: undefined,
+        runner: undefined,
+        routes: [
+          { name: 'unit', tests: ['test/*.test.mjs'], runner: 'node-test', baselineCommand: 'node --test', testCommand: 'node --test {tests}' },
+          { name: 'e2e', tests: ['e2e/*.spec.mjs'], runner: 'node-test', testCommand: 'node --test {tests}', optIn: true },
+          { name: 'ui', tests: ['ui/**/*.test.ts'], runner: 'vitest', testCommand: 'npx vitest run {tests}', optIn: true },
+        ],
+      },
+      mutants: [
+        { id: 'by-names', invariant: 'i', whyNotEquivalent: 'w', sites: [site], narrowTo: 'names', expectFail: ['e2e/a.spec.mjs::a'] },
+        { id: 'by-missing', invariant: 'i', whyNotEquivalent: 'w', sites: [site], expectFail: ['e2e/gone.spec.mjs::a'] },
+        { id: 'by-file', invariant: 'i', whyNotEquivalent: 'w', sites: [site], expectFail: ['e2e/a.spec.mjs::a'] },
+      ],
+      label: 'routing-validate-optin',
+    });
+    try {
+      const result = await runCli(['validate', '--json'], { cwd: repo.root });
+      const report = JSON.parse(result.stdout);
+      const issue = (code) => report.issues.filter((i) => i.code === code);
+
+      const [never] = issue('adapter-no-test-patterns');
+      assert.match(never.detail, /^route "ui" \(vitest\) is opt-in and its "tests" \(ui\/\*\*\/\*\.test\.ts\) match no tracked file.*never runs/);
+      const [blind] = issue('report-dir-unused');
+      assert.match(blind.detail, /^route "ui" .* but "testCommand" never mentions it/);
+      assert.doesNotMatch(blind.detail, /baselineCommand/);
+
+      const [names, missing, file] = report.mutants;
+      assert.match(blind.detail, /empty narrow scope and ERROR/);
+      assert.doesNotMatch(blind.detail, /baseline gate/);
+      const gone = missing.issues.find((i) => i.code === 'opt-in-unattested');
+      assert.match(gone.detail, /ref-file-missing/);
+      assert.doesNotMatch(gone.detail, /Drop narrowTo/);
+      assert.match(unattested0(names), /Drop narrowTo/);
+      const unattested = names.issues.find((i) => i.code === 'opt-in-unattested');
+      assert.equal(unattested.severity, 'problem');
+      assert.equal(file.issues.some((i) => i.code === 'opt-in-unattested'), false);
       assert.equal(result.exitCode, 4);
     } finally { repo.cleanup(); }
   });

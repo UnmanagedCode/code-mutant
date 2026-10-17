@@ -54,7 +54,8 @@ search for the runner.
    that runner's own discovery (Vitest's `include`, say). Only counted adapters whose refs name files
    can be routed (not `exit-code`, not `dotnet`); each `testCommand` needs `{tests}`; globs take no
    braces (list `.ts` and `.tsx` separately); a file belongs to the first route that matches it. Full
-   rules: "Routing" in `code-mutant`'s `mutants.schema.md`.
+   rules: "Routing" in `code-mutant`'s `mutants.schema.md`. A suite too slow to run in every baseline
+   takes `"optIn": true` and no `baselineCommand`: it runs only for a mutant whose refs name its files.
 
    A counted-grade command must exit 0 whenever no test failed: one that chains a lint or guardrail
    step exiting non-zero on its own fails the baseline gate (`outcome: "failed"`), so scope
@@ -94,8 +95,10 @@ search for the runner.
 8. **Verify by running it before you finish.** `mutate.mjs baseline` (without `--no-canary`), invoked as above, must report the
    baseline `passed` **and** the canary `KILLED`; the one exception is an `exit-code`-grade harness,
    which has no named test to inject and reports `not-established`. A routed harness must show
-   **every route** green under the baseline and the canary `KILLED` in every route (`routes[]` on
-   the canary record). Files existing is not "done" —
+   **every non-opt-in route** green under the baseline and the canary `KILLED` in every one of them
+   (`routes[]` on the canary record), each opt-in route listed under `skippedRoutes`. Verify each
+   opt-in route with a `probe` whose `--expect-fail` names a test in one of its files: its narrow scope
+   must be green and the canary `KILLED` in that route (`gates.canary.scopes[].routes[]`). Files existing is not "done" —
    fix `config.json` (or the parser) until the gates read that way, and record the numbers in the
    README per step 6.
 
