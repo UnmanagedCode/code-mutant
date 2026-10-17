@@ -53,6 +53,40 @@ describe('routes: accepted shape', () => {
   });
 });
 
+const OPT_IN = {
+  name: 'e2e', tests: ['e2e/*.spec.ts'], runner: 'node-test', testCommand: 'node --test {tests}', optIn: true,
+};
+
+describe('routes: opt-in', () => {
+  // Invariant: an opt-in route carries no baselineCommand, and `optIn: false` is the plain route.
+  test('an opt-in route normalises without baselineCommand; optIn: false is the plain route', () => {
+    withConfig({ routes: [BACKEND, OPT_IN] }, (repoRoot) => {
+      const route = loadConfig({ repoRoot }).routes[1];
+      assert.deepEqual(route, OPT_IN);
+      assert.equal('baselineCommand' in route, false);
+    });
+    withConfig({ routes: [{ ...BACKEND, optIn: false }] }, (repoRoot) => {
+      assert.deepEqual(loadConfig({ repoRoot }).routes, [BACKEND]);
+    });
+  });
+
+  // Invariant: a mis-typed or contradictory opt-in is refused at load, before anything is measured.
+  test('optIn must be boolean, excludes baselineCommand, and cannot cover every route', () => {
+    rejects({ routes: [BACKEND, { ...OPT_IN, optIn: 'yes' }] }, /"optIn" must be true or false/);
+    rejects({ routes: [BACKEND, { ...OPT_IN, baselineCommand: 'x' }] }, /never runs on an opt-in route/);
+    rejects({ routes: [OPT_IN] }, /at least one route must run in it/);
+    const { baselineCommand, ...bare } = BACKEND;
+    rejects({ routes: [bare] }, /"baselineCommand" must be a non-empty string/);
+  });
+
+  // Invariant: optIn:false keys like absent (existing keys stay stable); optIn:true moves the key.
+  test('fingerprint: optIn false equals absent, true differs', () => {
+    const fp = (routes) => withConfig({ routes }, (repoRoot) => configFingerprint(loadConfig({ repoRoot })));
+    assert.equal(fp([{ ...BACKEND, optIn: false }]), fp([BACKEND]));
+    assert.notEqual(fp([BACKEND, OPT_IN]), fp([BACKEND, { ...OPT_IN, optIn: undefined, baselineCommand: 'x' }]));
+  });
+});
+
 describe('routes: each validation rule', () => {
   test('routes beside a top-level runner/command is refused, naming the keys to remove', () => {
     rejects({ routes: [BACKEND], runner: 'node-test', testCommand: 'x {tests}' },
@@ -71,7 +105,7 @@ describe('routes: each validation rule', () => {
   test('an unknown key is refused, listing the allowed keys -- the "test" for "tests" typo', () => {
     const { tests, ...rest } = BACKEND;
     rejects({ routes: [{ ...rest, test: tests }] },
-      /routes\[0\] \("backend"\): unknown key\(s\) "test"; a route takes "name", "tests", "runner", "baselineCommand", "testCommand"/);
+      /routes\[0\] \("backend"\): unknown key\(s\) "test"; a route takes "name", "tests", "runner", "baselineCommand", "testCommand", "optIn"/);
   });
 
   test('name must be a non-empty string', () => {

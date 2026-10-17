@@ -78,7 +78,7 @@ project's repo (the *how* persists; see [Artifact lifetime](#artifact-lifetime) 
 | `baselineCommand` | *required* | The project's real "run everything" command, used to measure a clean baseline before any mutant is trusted. |
 | `testCommand` | *required* | The command run per mutant, containing a `{tests}` placeholder the runner substitutes with the narrowed scope (see [Narrowing](#narrowing-and-signal-grades)). |
 | `runner` | *required* | Which output-parsing adapter to use — see [Adapters](#adapters). |
-| `routes` | *unset* | For a project with more than one test runner: an array of `{name, tests, runner, baselineCommand, testCommand}`, **mutually exclusive with** the top-level `runner`/`baselineCommand`/`testCommand`. Each route owns the test files its `tests` globs match (first match wins) and runs them with its own runner and commands; every other key here stays shared. See [Routing](#routing). |
+| `routes` | *unset* | For a project with more than one test runner: an array of `{name, tests, runner, baselineCommand, testCommand}` (plus optional `optIn`), **mutually exclusive with** the top-level `runner`/`baselineCommand`/`testCommand`. Each route owns the test files its `tests` globs match (first match wins) and runs them with its own runner and commands; every other key here stays shared. See [Routing](#routing). |
 | `isolation` | `"in-place"` | `"copy"` or `"in-place"` — see [Isolation modes](#isolation-modes). Overridable per invocation with `--copy`/`--in-place`. |
 | `preserve` | `[]` | Paths to symlink into an isolated copy rather than duplicate (e.g. `node_modules`). |
 | `timeoutMs` | `120000` | Per-*command* wall-clock **ceiling** — the fallback for any command with no like-for-like reference (the baseline, a narrow baseline, `setup`/`teardown`). A command killed at its deadline is never counted as a kill; which verdict it gets depends on which command hung — see the `TIMEOUT` row under [Verdicts](#verdicts). |
@@ -127,11 +127,16 @@ own config, say — writes `routes` instead of one `runner`. Each route names th
 command runs the routes through one driver (`lib/route-exec.mjs`), and each route's output is read
 by its own adapter:
 
-- **Baseline:** green only when **every route** is green on its own — a route that ran zero tests
+- **Baseline:** green only when **every non-opt-in route** is green on its own — a route that ran zero tests
   fails it, whatever the other routes did.
 - **Narrowing:** a mutant runs only the routes owning one of its `expectFail`/`expectPass` files;
   a route with no ref in scope does not run (`narrowing.routes`). A ref no route owns is refused.
 - **Canary:** must fire **in every route** the judging command runs.
+- **Opt-in route:** `"optIn": true` (with no `baselineCommand`) is for a suite too slow to run in
+  every baseline, such as Playwright. The baseline and the baseline-scope canary skip it
+  (`skippedRoutes`, printed `SKIPPED`); it runs only for a mutant or probe whose refs name one of its
+  files, and then gets the full narrow gates. A `narrowTo: "names"` or `narrowCommand` mutant that
+  runs one is refused as `canary-not-established`. At least one route must not be opt-in.
 - **Verdict:** a route with a broken capture, zero tests, or a non-zero exit naming no failure
   makes the mutant `ERROR`; otherwise the routes' failures are merged and graded as usual.
 

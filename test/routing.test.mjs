@@ -95,6 +95,19 @@ describe('the routed adapter', () => {
     assert.equal(config.baselineCommand, compileRoutedCommand([['unit', 'node --test test/'], ['web', 'node --test web/']]));
   });
 
+  // Invariant: the compiled baseline runs only non-opt-in routes, while an opt-in
+  // ref still narrows to that route alone.
+  test('an opt-in route is left out of the baseline and still runs for its own ref', async () => {
+    const optIn = { name: 'e2e', tests: ['e2e/*.spec.mjs'], runner: 'node-test', testCommand: 'node --test {tests}', optIn: true };
+    const { adapter, config } = await harness([...ROUTES, optIn]);
+    assert.equal(config.baselineCommand, compileRoutedCommand([['unit', 'node --test test/'], ['web', 'node --test web/']]));
+    const narrowing = planNarrowing({
+      mutant: { id: 'm', expectFail: ['e2e/a.spec.mjs::x'] }, adapter, testCommand: config.testCommand,
+    });
+    assert.deepEqual(narrowing.routes, ['e2e']);
+    assert.equal(narrowing.command, compileRoutedCommand([['e2e', "node --test 'e2e/a.spec.mjs'"]]));
+  });
+
   test('no envelope reads as zero tests with a diagnostic, never green', async () => {
     const { adapter } = await harness();
     const parsed = adapter.parse('', 'boom\n', 1, {});
@@ -454,6 +467,52 @@ describe('validate, routed', () => {
       const stray = report.mutants[0].issues.find((i) => i.code === 'no-narrow-scope');
       assert.equal(stray.severity, 'problem');
       assert.match(stray.detail, /lib\/elsewhere\.test\.mjs matches no route's tests/);
+      assert.equal(result.exitCode, 4);
+    } finally { repo.cleanup(); }
+  });
+});
+
+describe('validate, opt-in routes', () => {
+  // Invariant: an opt-in route is judged on its own terms -- no baselineCommand to
+  // name, never-runs wording for unmatched tests, and a mutant `run` would refuse
+  // (NAMES on an opt-in file) is a problem while the plain one is clean.
+  test('opt-in wording, no baselineCommand blame, and opt-in-unattested only for names', async () => {
+    const files = guardFiles();
+    files['e2e/a.spec.mjs'] = "import { test } from 'node:test';\ntest('a', () => {});\n";
+    const site = { file: 'src/guard.mjs', anchor: "return kind === 'user-defined';", replacement: 'return false;' };
+    const repo = makeRepo({
+      files,
+      config: {
+        baselineCommand: undefined,
+        testCommand: undefined,
+        runner: undefined,
+        routes: [
+          { name: 'unit', tests: ['test/*.test.mjs'], runner: 'node-test', baselineCommand: 'node --test', testCommand: 'node --test {tests}' },
+          { name: 'e2e', tests: ['e2e/*.spec.mjs'], runner: 'node-test', testCommand: 'node --test {tests}', optIn: true },
+          { name: 'ui', tests: ['ui/**/*.test.ts'], runner: 'vitest', testCommand: 'npx vitest run {tests}', optIn: true },
+        ],
+      },
+      mutants: [
+        { id: 'by-names', invariant: 'i', whyNotEquivalent: 'w', sites: [site], narrowTo: 'names', expectFail: ['e2e/a.spec.mjs::a'] },
+        { id: 'by-file', invariant: 'i', whyNotEquivalent: 'w', sites: [site], expectFail: ['e2e/a.spec.mjs::a'] },
+      ],
+      label: 'routing-validate-optin',
+    });
+    try {
+      const result = await runCli(['validate', '--json'], { cwd: repo.root });
+      const report = JSON.parse(result.stdout);
+      const issue = (code) => report.issues.filter((i) => i.code === code);
+
+      const [never] = issue('adapter-no-test-patterns');
+      assert.match(never.detail, /^route "ui" \(vitest\) is opt-in and its "tests" \(ui\/\*\*\/\*\.test\.ts\) match no tracked file.*never runs/);
+      const [blind] = issue('report-dir-unused');
+      assert.match(blind.detail, /^route "ui" .* but "testCommand" never mentions it/);
+      assert.doesNotMatch(blind.detail, /baselineCommand/);
+
+      const [names, file] = report.mutants;
+      const unattested = names.issues.find((i) => i.code === 'opt-in-unattested');
+      assert.equal(unattested.severity, 'problem');
+      assert.equal(file.issues.some((i) => i.code === 'opt-in-unattested'), false);
       assert.equal(result.exitCode, 4);
     } finally { repo.cleanup(); }
   });

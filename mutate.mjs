@@ -198,7 +198,8 @@ NARROWING
   In exit-code mode there is no substitution -- the whole gate command runs. A
   per-mutant "narrowCommand" overrides the substituted testCommand entirely.
   --learn with no expectFail/expectPass at all falls back to baselineCommand
-  (the whole suite) rather than refusing, since discovery has no scope to narrow.
+  (the whole suite) rather than refusing, since discovery has no scope to narrow;
+  under "routes" that fallback never runs an opt-in route.
 
 config.json (harness/mutation/config.json)
   baselineCommand  Required. The project's real "run everything" command.
@@ -220,7 +221,11 @@ config.json (harness/mutation/config.json)
                    ("*", "**/", no braces) match it; each route's commands
                    run only for its own files, and the baseline and canary
                    must hold in every route. Counted adapters whose refs name
-                   files only. See "Routing" in mutants.schema.md.
+                   files only. A route with "optIn": true (no baselineCommand)
+                   is skipped by the baseline and the baseline-scope canary
+                   and runs only when a ref names one of its files, with the
+                   full narrow gates; at least one route must not be opt-in.
+                   See "Routing" in mutants.schema.md.
   isolation        "in-place" (default) or "copy".
   preserve         Paths symlinked into a copy instead of duplicated, e.g.
                    ["node_modules"].

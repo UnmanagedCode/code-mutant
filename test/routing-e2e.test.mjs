@@ -29,6 +29,8 @@ const ROUTES = [
     name: 'frontend', tests: ['frontend/src/**/*.test.js'], runner: 'vitest',
     baselineCommand: VITEST, testCommand: `${VITEST} {tests}`,
   },
+  // Opt-in: the baseline never runs it, which the red unfinished spec proves.
+  { name: 'e2e', tests: ['e2e/*.spec.mjs'], runner: 'node-test', testCommand: 'node --test {tests}', optIn: true },
 ];
 
 const FILES = {
@@ -51,6 +53,17 @@ import { isAllowed, retries } from '../src/guard.mjs';
 test('allows ollama', () => { assert.equal(isAllowed('ollama'), true); });
 test('allows user-defined backends', () => { assert.equal(isAllowed('user-defined'), true); });
 test('caps retries at 5', () => { assert.equal(retries(9), 5); });
+`,
+  'e2e/guard.spec.mjs': `import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { isAllowed } from '../src/guard.mjs';
+
+test('e2e allows ollama', () => { assert.equal(isAllowed('ollama'), true); });
+`,
+  'e2e/unfinished.spec.mjs': `import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+test('e2e unfinished', () => { assert.fail('not written yet'); });
 `,
   'frontend/vitest.config.mjs': `import { fileURLToPath } from 'node:url';
 
@@ -99,6 +112,11 @@ const MUTANTS = [
     sites: [{ file: 'shared/clamp.mjs', anchor: 'Math.min(hi, Math.max(lo, n))', replacement: 'Math.max(lo, n)' }],
     expectFail: ['tests/guard.test.mjs::caps retries at 5', `${FRONT}::percent > caps at 100`],
   },
+  {
+    id: 'e2e-killed', invariant: 'ollama is allowed', whyNotEquivalent: 'denies ollama',
+    sites: [{ file: 'src/guard.mjs', anchor: "if (kind === 'ollama') return true;", replacement: "if (kind === 'ollama') return false;" }],
+    expectFail: ['e2e/guard.spec.mjs::e2e allows ollama'],
+  },
 ];
 
 function routedRepo(label, mutants = null) {
@@ -136,6 +154,7 @@ describe('mixed node + Vitest routing, full mutate cycle', () => {
         report.gates.baseline.groups.map((g) => [g.route, g.green, g.counts.ran]),
         [['backend', true, 3], ['frontend', true, 2]],
       );
+      assert.deepEqual(report.gates.baseline.skippedRoutes, [{ route: 'e2e', runner: 'node-test', reason: 'opt-in' }]);
 
       const canary = report.gates.canary;
       assert.equal(canary.status, 'KILLED', canary.detail);
@@ -151,13 +170,17 @@ describe('mixed node + Vitest routing, full mutate cycle', () => {
       assert.equal(byId['frontend-killed'].verdict, 'KILLED', byId['frontend-killed'].detail);
       assert.equal(byId['frontend-survived'].verdict, 'SURVIVED', byId['frontend-survived'].detail);
       assert.equal(byId.cross.verdict, 'KILLED', byId.cross.detail);
+      assert.equal(byId['e2e-killed'].verdict, 'KILLED', byId['e2e-killed'].detail);
+      assert.deepEqual(byId['e2e-killed'].narrowing.routes, ['e2e']);
+      const e2eScope = canary.scopes.find((scope) => scope.mutants.includes('e2e-killed'));
+      assert.deepEqual(e2eScope.routes.map((r) => [r.route, r.status]), [['e2e', 'KILLED']]);
       assert.deepEqual(byId['backend-killed'].narrowing.routes, ['backend']);
       assert.deepEqual(byId['frontend-killed'].narrowing.routes, ['frontend']);
       assert.deepEqual(byId.cross.narrowing.routes, ['backend', 'frontend']);
       assert.deepEqual(byId.cross.groups.map((g) => [g.route, g.counts.failed]), [['backend', 1], ['frontend', 1]]);
 
       // The survivor block says which runners judged it, and which never ran.
-      assert.match(formatReport(report), /routes run: {3}frontend \(backend: no ref in scope\)/);
+      assert.match(formatReport(report), /routes run: {3}frontend \(backend: no ref in scope, e2e: no ref in scope\)/);
 
       assert.equal(exitCode, 1, 'a survivor exits 1');
       assert.deepEqual(trackedBytes(repo.root), before, 'the tree is byte-identical');
@@ -174,6 +197,7 @@ describe('mixed node + Vitest routing, full mutate cycle', () => {
       assert.equal(report.gates.baseline.outcome, 'passed', report.gates.baseline.detail);
       assert.equal(report.gates.canary.scope, 'baseline');
       assert.equal(report.gates.canary.status, 'KILLED', report.gates.canary.detail);
+      assert.deepEqual(report.gates.canary.skippedRoutes, [{ route: 'e2e', runner: 'node-test', reason: 'opt-in' }]);
       assert.deepEqual(
         report.gates.canary.routes.map((r) => [r.route, r.status, r.target]),
         [['backend', 'KILLED', 'tests/guard.test.mjs'], ['frontend', 'KILLED', FRONT]],

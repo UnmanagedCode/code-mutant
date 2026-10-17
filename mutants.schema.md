@@ -135,14 +135,17 @@ writes `routes` in `config.json` instead of the top-level `runner`/`baselineComm
       "baselineCommand": "node --test 'tests/*.test.mjs'", "testCommand": "node --test {tests}" },
     { "name": "frontend", "tests": ["frontend/src/**/*.test.ts", "frontend/src/**/*.test.tsx"], "runner": "vitest",
       "baselineCommand": "npx vitest run --config frontend/vitest.config.ts --reporter=json --outputFile=\"$CODE_MUTANT_REPORT_DIR/vitest.json\"",
-      "testCommand": "npx vitest run --config frontend/vitest.config.ts --reporter=json --outputFile=\"$CODE_MUTANT_REPORT_DIR/vitest.json\" {tests}" }
+      "testCommand": "npx vitest run --config frontend/vitest.config.ts --reporter=json --outputFile=\"$CODE_MUTANT_REPORT_DIR/vitest.json\" {tests}" },
+    { "name": "e2e", "tests": ["web/e2e/**/*.spec.ts"], "runner": "custom", "optIn": true,
+      "testCommand": "npx playwright test {tests}" }
   ]
 }
 ```
 
 | Rule | Detail |
 |---|---|
-| Route keys | Exactly `name`, `tests`, `runner`, `baselineCommand`, `testCommand`; any other key (a `test` typo) is a config error naming the allowed keys. |
+| Route keys | Exactly `name`, `tests`, `runner`, `baselineCommand`, `testCommand`, `optIn`; any other key (a `test` typo) is a config error naming the allowed keys. |
+| `optIn` | Optional boolean; `false` is the same as absent. A route with `optIn: true` is skipped by the whole-suite baseline and the baseline-scope canary and runs only when a ref names one of its files. It must **not** carry `baselineCommand` (it never runs; refused at load). At least one route must not be opt-in (refused at load): the baseline's `ran > 0` check and the baseline-scope canary need a route to run in. |
 | `name` | Non-empty, unique, matching `/^[A-Za-z0-9][A-Za-z0-9._-]*$/` (it names a report subdirectory and report lines). |
 | `tests` | Non-empty array of globs in the harness's own dialect (`lib/glob.mjs`): `*` within a segment, `**/` across segments, **no braces** (refused — list `.ts` and `.tsx` separately). Mirror each runner's own discovery (e.g. Vitest's `include`). |
 | `testCommand` | Must contain `{tests}`. |
@@ -154,7 +157,7 @@ ERROR naming every route's patterns); `validate` reports it as `no-narrow-scope`
 
 **What runs:** every measured command is one invocation of the route driver
 (`lib/route-exec.mjs`) over route/command pairs. The baseline runs every route's
-`baselineCommand`; a mutant's narrowed command runs only the routes that own one of its scope files,
+`baselineCommand` (an opt-in route has none and is skipped); a mutant's narrowed command runs only the routes that own one of its scope files,
 each with that route's own `{tests}` substitution — a route with no ref in scope **does not run**,
 and `narrowing.routes` lists the ones that did. The driver runs every route even after one fails,
 each in the runner's process group (a timeout kill reaches them all) with its own report subdir
@@ -164,9 +167,10 @@ each in the runner's process group (a timeout kill reaches them all) with its ow
 
 | Where | Line |
 |---|---|
-| Header | `routes: <name>=<runner> [<tests>]; …` |
+| Header | `routes: <name>=<runner> [<tests>]; …`, with ` (opt-in)` after an opt-in route |
 | Baseline gate | one line per route under it: `- <route>  green\|NOT GREEN  <p/f/s> (p/f/s), exit <n>  [<detail>]` |
-| Canary gate | one line per route under the baseline-scope canary and under each narrow scope: `- <route> KILLED via <target>`, or `- <route> NOT FIRED  <detail>` |
+| Baseline gate, opt-in | `- <route>  SKIPPED  opt-in: …` for each opt-in route, after the route lines |
+| Canary gate | one line per route under the baseline-scope canary and under each narrow scope: `- <route> KILLED via <target>`, or `- <route> NOT FIRED  <detail>`; `- <route> SKIPPED  opt-in: …` for each opt-in route under the baseline-scope canary. A narrow scope that cannot be attested prints `NOT-ESTABLISHED` |
 | Survivor block | `routes run:   <routes> (<route>: no ref in scope, …)` — which runners judged the survivor, and which never ran |
 
 **How the routes' results combine** — each route group is parsed by its own adapter and judged on
@@ -211,7 +215,18 @@ scope files at narrow scope). The unit is `KILLED` only when **every** route's c
 otherwise it is `FAILED`, and its detail names the unattested routes. Each record carries
 `routes: [{ route, status, target, attempts, durationMs, detail }]`. The aggregate rules below are
 unchanged. A baseline-scope canary therefore costs one composite baseline run per route (cacheable,
-as before); a narrow scope spanning two routes costs two narrow runs.
+as before); a narrow scope spanning two routes costs two narrow runs. The baseline-scope canary
+runs only the **non-opt-in** routes and lists the rest in `skippedRoutes`.
+
+**Opt-in routes in a narrow scope.** A narrow-eligible command that runs an opt-in route is attested
+like any other: the canary must fire in that route, in its own scope files, and its narrow baseline
+must be green with `ran > 0`. A mutant that is *not* narrow-canary-eligible and whose command runs an
+opt-in route — `narrowTo: "names"`, or any per-mutant `narrowCommand` under a config that has an
+opt-in route (it carries no `narrowing.routes` to show it runs none) — is an **unattestable** unit:
+the baseline-scope canary never runs an opt-in route, so it cannot stand in. Its scope reads
+`NOT-ESTABLISHED`, its mutants `ERROR` with `canary-not-established`, and the aggregate rules below
+apply (`PARTIAL` beside an attested unit, `FAILED` when nothing was attested). `validate` reports the
+shape as `opt-in-unattested`.
 
 **A scope whose narrow baseline is not green is skipped**, not attested (`scopes[].skipped:
 "narrow-baseline-not-green"`): its mutants already `ERROR` on the scope itself (`scope-non-green`,
@@ -283,7 +298,8 @@ Two severities, and the split is a contract you may script against:
 | `no-narrow-scope` | problem | `planNarrowing` refused — references are present but none yields a scope. |
 | `mutation-dir-not-ignored` | problem | Catalog-level. `.mutation/` is not gitignored, which `run` hard-stops on. |
 | `adapter-no-canary` | problem | Adapter-level (routed: per route, each missing export suffixed with its route). A counted-grade adapter that does not export `canary(source, {file})` — see [Appendix B](#appendix-b--the-adapter-export-contract). Every command refuses the whole invocation on it — `baseline`, `run` and `probe` alike — before it measures anything. |
-| `adapter-no-test-patterns` | warning | Adapter-level. Counted grade whose `testFilePatterns` match no tracked file (including declaring none): `mutate.mjs baseline` alone cannot discover a canary target. `run` still works when an `expectFail` reference narrows to a real test file, and `baseline` works once a run has journalled a target. Routed: reported **per route**, for a route whose `tests` match no tracked file, naming the route. |
+| `adapter-no-test-patterns` | warning | Adapter-level. Counted grade whose `testFilePatterns` match no tracked file (including declaring none): `mutate.mjs baseline` alone cannot discover a canary target. `run` still works when an `expectFail` reference narrows to a real test file, and `baseline` works once a run has journalled a target. Routed: reported **per route**, for a route whose `tests` match no tracked file, naming the route. For an opt-in route the text says no ref can name a file it owns, so it never runs. |
+| `opt-in-unattested` | problem | Routed with an opt-in route. The mutant's command runs an opt-in route, is not narrow-canary-eligible (`narrowTo: "names"`, a `narrowCommand`), and the baseline-scope canary never runs an opt-in route, so `run` ERRORs it `canary-not-established`. Drop `narrowTo`/`narrowCommand`. |
 | `route-overlap` | warning | Routed only. A tracked file matches the `tests` of more than one route; the first route in declared order runs it and the others never do. |
 | `ref-file-missing` | warning | The adapter's references name files and `scopeOf(ref)` — the exact string narrowing substitutes — is not a path in this tree. |
 | `ref-shape` | warning | The adapter's references do **not** name files (`dotnet`, `exit-code`) but a reference is written `file::name`. |
@@ -378,7 +394,8 @@ finding can be pointed at exactly the commit it was found against.
   jobs:      number,
   workspaceRoot: string,
   adapter:   { name, grade: "counted"|"exit-code", modulePath,
-               routes: [ { name, runner, tests, grade, modulePath } ] },   // routes: ROUTED ONLY (name "routed")
+               routes: [ { name, runner, tests, grade, modulePath, optIn } ] },   // routes: ROUTED ONLY (name "routed");
+               // optIn: ROUTED-WITH-OPT-IN ONLY, present only when true
   learn:         boolean,         // true when --learn suppressed grading for this run
   mutatedSha:    string|null,     // `git rev-parse HEAD` -- points a survivor at a re-runnable commit
   reproducible:  boolean,         // false only when --allow-dirty was used to proceed on a dirty tree
@@ -406,8 +423,10 @@ finding can be pointed at exactly the commit it was found against.
                 failedTests: [string]|null, durationMs, timedOut, detail,   // failedTests: null when nothing is nameable
                 fromCache, measuredDurationMs,             // (exit-code grade, or a FAILED baseline with no parsed
                                                            // failure to name); [] only when green
-                groups: [ { route, runner, counts, exitCode, green, detail, durationMs } ] },
+                groups: [ { route, runner, counts, exitCode, green, detail, durationMs } ],
                                                            // groups: ROUTED ONLY -- each route judged on its own
+                skippedRoutes: [ { route, runner, reason: "opt-in" } ] },
+                                                           // ROUTED-WITH-OPT-IN ONLY -- never in groups
     canary:   { outcome: "passed"|"failed"|"not-established"|"partial",
                 status: "KILLED"|"FAILED"|"NOT-ESTABLISHED"|"PARTIAL",
                 scope: "baseline"|"narrow"|"mixed"|null,   // WHICH COMMAND(S) THIS GATE ATTESTS ABOUT;
@@ -424,6 +443,8 @@ finding can be pointed at exactly the commit it was found against.
                 } ] | null,
                 routes: [ { route, status, target, attempts, durationMs, detail } ],
                                                       // ROUTED ONLY: the baseline half's per-route canaries
+                skippedRoutes: [ { route, runner, reason: "opt-in" } ],
+                                                      // ROUTED-WITH-OPT-IN ONLY: routes the baseline half skipped
                 durationMs,                           // summed across every canary this gate ran
                 detail,
                 skipped: null|"no-canary",            // "no-canary": `baseline --no-canary` attempted none
@@ -707,7 +728,7 @@ per distinct tree+config; no pruning.
 | Input | Derivation | Why it is in the key |
 |---|---|---|
 | `treeDigest` | `git rev-parse HEAD^{tree}`, plus a canonical `(path, state)` list for every path `git status --porcelain -z -uall` reports; `state` is `<mode>:sha256(bytes)`, `absent`, or `link:<target>` | The gates measure the project's code. Committed content rides the tree sha; anything modified, staged, deleted or untracked-not-ignored is content-hashed. This is what makes a hit mean *byte-identical tree*, not *same commit*. The mode is in the state because `chmod +x` with identical bytes is reported by porcelain and changes what an exec-bit-dependent suite does. |
-| `configFingerprint` | The same fingerprint `journalKey` uses (`lib/fingerprint.mjs`) — over `baselineCommand`, `testCommand`, `runner`, `timeoutMs`, `hang`, `setup`, `teardown`, `preserve` | The resolved commands are what was measured. `timeoutMs` bounds the baseline, `hang` derives the canary's deadline, `setup`/`teardown` wrap every measured command, `preserve` changes what a copy contains. `testCommand` is not run by either gate and is in the key anyway: the fingerprint is the harness's identity, not a subset a later edit can drift from. |
+| `configFingerprint` | The same fingerprint `journalKey` uses (`lib/fingerprint.mjs`) — over `baselineCommand`, `testCommand`, `runner`, `timeoutMs`, `hang`, `setup`, `teardown`, `preserve`, and `routes` when routed (each route's `optIn` included, present only when true) | The resolved commands are what was measured. `timeoutMs` bounds the baseline, `hang` derives the canary's deadline, `setup`/`teardown` wrap every measured command, `preserve` changes what a copy contains. `testCommand` is not run by either gate and is in the key anyway: the fingerprint is the harness's identity, not a subset a later edit can drift from. |
 | `adapter` | `{name, grade, modulePath}` | The adapter decides whether the baseline is green and which canary path runs. A `custom` adapter's `parse.mjs` is tracked beside `config.json`, so `treeDigest` covers its contents too. |
 | `isolation` | `"in-place"` \| `"copy"`, after any `--copy`/`--in-place` override | A copy is not a git repository, so a suite that shells out to git is green in-place and red in a copy. Two different measurements. |
 | `harnessFingerprint` | `sha256` over the sorted `(relPath, sha256(bytes))` of `mutate.mjs` and every `lib/**/*.mjs` | The harness version, self-maintaining. `package.json` carries no `version` and this is a private plugin merged with no release step, so a version string only invalidates when someone remembers to bump it. A source digest cannot drift from the code it identifies. |
