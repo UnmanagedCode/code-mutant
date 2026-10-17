@@ -199,7 +199,8 @@ NARROWING
   per-mutant "narrowCommand" overrides the substituted testCommand entirely.
   --learn with no expectFail/expectPass at all falls back to baselineCommand
   (the whole suite) rather than refusing, since discovery has no scope to narrow;
-  under "routes" that fallback never runs an opt-in route.
+  under "routes" that fallback never runs an opt-in route, so
+  a result where nothing failed is an ERROR (opt-in-not-run), not a SURVIVED.
 
 config.json (harness/mutation/config.json)
   baselineCommand  Required. The project's real "run everything" command.

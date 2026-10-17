@@ -92,7 +92,7 @@ the seed only as the scope to narrow to, and reports each mutant's failing set w
 you fill `expectFail` from what actually failed instead of guessing and paying an `IMPRECISE`
 re-run. Leave `expectFail` empty only for a mutant no test claims (unnamed wiring), or for a narrow
 survivor you are checking for a killer elsewhere: with no ref, learn runs the whole suite for that
-mutant (under opt-in routes it errors instead: name a ref). Then run `validate`: it resolves every
+mutant (with opt-in routes, a no-kill result errors instead of surviving: name a ref in the opt-in route's files). Then run `validate`: it resolves every
 site against the current tree in about a second and flags stale anchors and mutants that can never
 read `KILLED`, but it runs no tests, so it establishes no gate and does not stand in for step 2.
 

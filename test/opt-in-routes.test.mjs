@@ -209,19 +209,36 @@ describe('a command no narrow canary can attest', () => {
 });
 
 describe('--learn with no refs', () => {
-  // Invariant: the whole-suite fallback never runs an opt-in route, so it must not
-  // return a verdict (SURVIVED "nothing covers this") for a mutant only that
-  // route covers; it ERRORs, naming the route.
-  test('a no-ref mutant is plan-failed naming the opt-in route, never SURVIVED', async () => {
-    const wired = { file: 'src/wired.mjs', anchor: '() => 1', replacement: '() => 2' };
-    const repo = optInRepo('optin-learn', [mutant('only-spec', { sites: [wired] })]);
+  const WIRED = { file: 'src/wired.mjs', anchor: '() => 1', replacement: '() => 2' };
+  async function learn(label, mutants, routes) {
+    const repo = optInRepo(label, mutants, routes);
     try {
       const result = await runCli(['run', '--all', '--learn', '--json'], { cwd: repo.root });
-      const [r] = JSON.parse(result.stdout).results;
-      assert.equal(r.verdict, 'ERROR', r.detail);
-      assert.equal(r.reason, 'plan-failed');
-      assert.match(r.detail, /opt-in route\(s\) spec/);
+      return JSON.parse(result.stdout).results[0];
     } finally { repo.cleanup(); }
+  }
+
+  // Invariant: the fallback's failures are real killers, so a mutant a non-opt-in
+  // route kills is LEARNED even though an opt-in route exists.
+  test('a mutant a non-opt-in route kills is LEARNED', async () => {
+    const r = await learn('optin-learn-killed', [mutant('killed')], [UNIT, SPEC]);
+    assert.equal(r.verdict, 'LEARNED', r.detail);
+    assert.ok(r.failedTests.some((id) => id.includes('allows user-defined')));
+  });
+
+  // Invariant: "nothing failed" from a fallback that did not run an opt-in route
+  // is no verdict -- never SURVIVED -- and the detail names the route.
+  test('a mutant only the opt-in route would kill is a non-verdict naming the route', async () => {
+    const r = await learn('optin-learn-unrun', [mutant('only-spec', { sites: [WIRED] })], [UNIT, SPEC]);
+    assert.equal(r.verdict, 'ERROR', r.detail);
+    assert.equal(r.reason, 'opt-in-not-run');
+    assert.match(r.detail, /opt-in route\(s\) spec/);
+  });
+
+  // Control: with no opt-in route the same no-kill result is still SURVIVED.
+  test('without an opt-in route the same mutant still reads SURVIVED', async () => {
+    const r = await learn('optin-learn-control', [mutant('only-spec', { sites: [WIRED] })], [UNIT]);
+    assert.equal(r.verdict, 'SURVIVED', r.detail);
   });
 });
 

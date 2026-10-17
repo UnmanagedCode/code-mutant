@@ -151,7 +151,7 @@ writes `routes` in `config.json` instead of the top-level `runner`/`baselineComm
 | `testCommand` | Must contain `{tests}`. |
 | `runner` | A shipped adapter or `custom` (which loads the harness's one `parse.mjs`). Refused at load (exit 4): `exit-code` grade (no named tests, so no file to route), and any adapter whose refs do not name files (`dotnet`, or a `custom` parser overriding `scopeOf`). |
 
-`--learn`'s no-refs whole-suite fallback never runs an opt-in route, so under a config with one a mutant with no ref `ERROR`s (`plan-failed`, naming the route) instead of reading `SURVIVED`.
+`--learn`'s no-refs whole-suite fallback never runs an opt-in route. Its failures are still `LEARNED`; a result where nothing failed `ERROR`s with `opt-in-not-run` (naming the unrun routes) instead of reading `SURVIVED`, and the mutant needs a ref in an opt-in route's files to test them.
 
 An opt-in route declared before a non-opt-in route owns every file both match (first match wins),
 so the later route's `baselineCommand` never runs those files and the baseline-scope canary can find
@@ -271,6 +271,7 @@ shape](#the-shape-of-an-ungraded-result)) — or a usage error before the run:
 | `scope-empty` | The narrowed scope ran **zero tests** — routed, any one route group ran zero. Never reported as `SURVIVED`. |
 | `unexplained-exit` | Counted mode: the command exited non-zero while naming **no failing test** — something the adapter cannot see went wrong, so the run is not observably green. Never reported as `SURVIVED`. |
 | `canary-not-established` | The command that would judge this mutant could not be shown to observe a deliberate break, so nothing it reports is interpretable. Two shapes: **exit-code mode**, where the per-mutant canary could not break the mutated file; and **counted mode**, where this mutant's own narrow scope was not attested by the canary gate (`gates.canary.status: "PARTIAL"`) while some other scope was. |
+| `opt-in-not-run` | `--learn` with no refs, under a config with an opt-in route: the whole-suite fallback found no failing test, but it does not run the opt-in route(s) named in `detail`, so it cannot show nothing covers the mutant. Name a ref in one of their files. |
 | `timed-out` | The command was killed at its deadline (`results[].deadlineMs`; `timeoutMs` only for a command with no unmutated reference). |
 | `inplace-locked` | Trust gate, **in-place isolation only**, checked before every other gate: another code-mutant process holds this worktree — a claim in `<git-dir>/code-mutant-inplace.lock.d/` that could not be shown to belong to a dead process. Exit 2, `results: []`, nothing mutated; the detail names the holding pid, its command and the claim directory. A claim left by a dead, pid-reused or rebooted-away process is ignored and swept instead. `copy` mode never takes the lock. The lock's residual refusals are enumerated under **Isolation modes** in the README. |
 | `dirty-tree` | Trust gate, `baseline`/`run` (before baseline and canary): the worktree has uncommitted or untracked-and-not-gitignored changes. `--allow-dirty` overrides it; `probe` only warns. See [The clean-tree gate](#the-clean-tree-gate). |
