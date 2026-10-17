@@ -155,8 +155,8 @@ writes `routes` in `config.json` instead of the top-level `runner`/`baselineComm
 
 An opt-in route declared before a non-opt-in route owns every file both match (first match wins),
 and the baseline no longer runs its pair. The later route's baseline-scope canary therefore relies on
-that route's own `baselineCommand` running the shared file; if it does not, the canary has no
-candidate there and FAILS, closed. `validate` reports the overlap as `route-overlap`.
+that route's own `baselineCommand` running the shared file; if it does not, that candidate cannot
+observe the injected break and, with no other, the canary FAILS, closed. `validate` reports the overlap as `route-overlap`.
 
 **Ref → route:** a test reference routes by its file part to the **first** route, in declared
 order, whose `tests` match it. A ref matching no route is refused for that mutant (`plan-failed`
