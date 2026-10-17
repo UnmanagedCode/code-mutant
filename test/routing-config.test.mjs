@@ -87,6 +87,14 @@ describe('routes: opt-in', () => {
   });
 });
 
+describe('routes: top-level keys', () => {
+  // Invariant: only runner/baselineCommand/testCommand are exclusive with routes;
+  // the refusal never claims routes replace an `optIn`.
+  test('the exclusivity refusal lists no optIn', () => {
+    rejects({ routes: [BACKEND], runner: 'node-test', optIn: true }, /replaces the top-level "runner" --/);
+  });
+});
+
 describe('routes: each validation rule', () => {
   test('routes beside a top-level runner/command is refused, naming the keys to remove', () => {
     rejects({ routes: [BACKEND], runner: 'node-test', testCommand: 'x {tests}' },

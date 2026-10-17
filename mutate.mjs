@@ -216,11 +216,12 @@ config.json (harness/mutation/config.json)
                    there reaches parse() as context.reports.
   routes           Instead of runner/baselineCommand/testCommand (never with
                    them), for a project with several test runners: an array
-                   of {name, tests, runner, baselineCommand, testCommand}.
+                   of {name, tests, runner, baselineCommand, testCommand,
+                   optIn}.
                    A test file belongs to the first route whose "tests" globs
                    ("*", "**/", no braces) match it; each route's commands
                    run only for its own files, and the baseline and canary
-                   must hold in every route. Counted adapters whose refs name
+                   must hold in every non-opt-in route. Counted adapters whose refs name
                    files only. A route with "optIn": true (no baselineCommand)
                    is skipped by the baseline and the baseline-scope canary
                    and runs only when a ref names one of its files, with the
@@ -259,8 +260,10 @@ TRUST GATES
   canary             Synthesised per run, never committed. Run against each
                      command that JUDGES a mutant (its narrowed scope), once per
                      distinct scope, and against baselineCommand for anything
-                     that cannot be soundly narrowed -- all six conditions:
-                     names narrowing, a per-mutant narrowCommand, exit-code
+                     that cannot be soundly narrowed -- these conditions:
+                     names narrowing, a per-mutant narrowCommand (both are
+                     refused instead, canary-not-established, when the command
+                     runs an opt-in route), exit-code
                      grade, an adapter whose refs do not name files (dotnet, or
                      a custom parser with its own scopeOf), a testCommand with
                      no {tests}, a narrow command identical to baselineCommand

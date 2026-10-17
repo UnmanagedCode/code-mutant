@@ -48,6 +48,8 @@ function optInRepo(label, mutants = null, routes = [UNIT, SPEC]) {
   files['spec/broken.spec.mjs'] = SPEC_BROKEN;
   files['empty/a.spec.mjs'] = STUB;
   files['canned/a.spec.mjs'] = STUB;
+  files['src/wired.mjs'] = 'export const wired = () => 1;\n';
+  files['spec/wired.spec.mjs'] = "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { wired } from '../src/wired.mjs';\ntest('wired is 1', () => { assert.equal(wired(), 1); });\n";
   files['tools/zero.mjs'] = ZERO;
   files['tools/canned.mjs'] = CANNED;
   return makeRepo({
@@ -170,7 +172,7 @@ describe('a command no narrow canary can attest', () => {
         assert.match(results[id].detail, /opt-in route\(s\) spec/);
       }
       assert.equal(results['unit-only'].verdict, 'KILLED', results['unit-only'].detail);
-      assert.match(formatReport(report), /NOT-ESTABLISHED/);
+      assert.match(formatReport(report), /^ {12}- .+ {3}NOT-ESTABLISHED {2}not attestable/m);
     } finally { repo.cleanup(); }
   });
 
@@ -202,6 +204,23 @@ describe('a command no narrow canary can attest', () => {
       assert.notEqual(results['names-unit'].verdict, 'ERROR', results['names-unit'].detail);
       assert.equal(results['names-spec'].verdict, 'ERROR');
       assert.equal(results['names-spec'].reason, 'canary-not-established');
+    } finally { repo.cleanup(); }
+  });
+});
+
+describe('--learn with no refs', () => {
+  // Invariant: the whole-suite fallback never runs an opt-in route, so it must not
+  // return a verdict (SURVIVED "nothing covers this") for a mutant only that
+  // route covers; it ERRORs, naming the route.
+  test('a no-ref mutant is plan-failed naming the opt-in route, never SURVIVED', async () => {
+    const wired = { file: 'src/wired.mjs', anchor: '() => 1', replacement: '() => 2' };
+    const repo = optInRepo('optin-learn', [mutant('only-spec', { sites: [wired] })]);
+    try {
+      const result = await runCli(['run', '--all', '--learn', '--json'], { cwd: repo.root });
+      const [r] = JSON.parse(result.stdout).results;
+      assert.equal(r.verdict, 'ERROR', r.detail);
+      assert.equal(r.reason, 'plan-failed');
+      assert.match(r.detail, /opt-in route\(s\) spec/);
     } finally { repo.cleanup(); }
   });
 });

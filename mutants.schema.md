@@ -151,6 +151,12 @@ writes `routes` in `config.json` instead of the top-level `runner`/`baselineComm
 | `testCommand` | Must contain `{tests}`. |
 | `runner` | A shipped adapter or `custom` (which loads the harness's one `parse.mjs`). Refused at load (exit 4): `exit-code` grade (no named tests, so no file to route), and any adapter whose refs do not name files (`dotnet`, or a `custom` parser overriding `scopeOf`). |
 
+`--learn`'s no-refs whole-suite fallback never runs an opt-in route, so under a config with one a mutant with no ref `ERROR`s (`plan-failed`, naming the route) instead of reading `SURVIVED`.
+
+An opt-in route declared before a non-opt-in route owns every file both match (first match wins),
+so the later route's `baselineCommand` never runs those files and the baseline-scope canary can find
+no candidate there: it FAILS, closed. `validate` reports it as `route-overlap`.
+
 **Ref → route:** a test reference routes by its file part to the **first** route, in declared
 order, whose `tests` match it. A ref matching no route is refused for that mutant (`plan-failed`
 ERROR naming every route's patterns); `validate` reports it as `no-narrow-scope`.
@@ -631,7 +637,7 @@ proof.
 
 **`<key>` covers** `mutatedSha`, the adapter (`name`/`grade`/`modulePath`), `isolation`, `jobs`,
 `learn`, and a config fingerprint over `baselineCommand`, `testCommand`, `runner`, `timeoutMs`,
-`hang`, `setup`, `teardown`, `preserve`. Change any of them and the key changes, so nothing is
+`hang`, `setup`, `teardown`, `preserve`, and `routes` when routed (each route's `optIn` included). Change any of them and the key changes, so nothing is
 reused. `jobs` is in there deliberately: reusing a `jobs=4` verdict inside a `jobs=1` re-run would
 hide precisely the concurrent-suite hazard the README tells you to check for. `hang` is in there so
 retuning the deadline forces every hung mutant to be re-measured.
