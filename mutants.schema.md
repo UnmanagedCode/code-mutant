@@ -196,7 +196,9 @@ that judge a mutant in this invocation. No verdict comes from the baseline gate 
 mutant's narrowed command, which runs only `narrowing.routes` and has its own narrow baseline and
 canary — so a route outside every mutant's `narrowing.routes` can change no verdict. The scope is
 decided before any command runs (`deriveGateScope`, `lib/gate-scope.mjs`), and reported as
-`gateScope: { routes, reason, detail }` (routed only) and as a `gate scope:` header line.
+`gateScope: { routes, reason, detail }` (routed only) and as a `gate scope:` header line. A routed
+run refused before the scope is derived — at the in-place lock, clean-tree, base-diff or the canary
+prerequisite — carries neither.
 
 | `reason` | When | Gates run |
 |---|---|---|
@@ -509,7 +511,9 @@ finding can be pointed at exactly the commit it was found against.
                                                 // a remedy left to name
   resumed:   { journal, key, reused, ran } | null,   // non-null iff --resume was passed
   resumable: { key, available } | null,             // ADVISORY: a journal matches and --resume was NOT passed
-  gateScope: { routes: [name], reason, detail },   // ROUTED ONLY -- absent for a single runner. The routes
+  gateScope: { routes: [name], reason, detail },   // ROUTED ONLY -- absent for a single runner, and for a
+                                                   // routed run refused at the in-place lock, clean-tree,
+                                                   // base-diff or the canary prerequisite. The routes
                                                    // the gate records are about, whether measured here or
                                                    // served from cache (a skipped canary attests none); reason is one
                                                    // of GateScopeReason (lib/gate-scope.mjs), see "The gates'
@@ -742,7 +746,7 @@ persisted and reused against a tree that has not changed.
   `not-established` or partial canary is never filled. The fill obeys the same four write conditions
   below, writes to the same Phase-A key the entry was read under, carries `keyInputs`, `measuredAt`,
   `measuredSha` and the baseline record over verbatim, stamps `canaryMeasuredAt`, and sets
-  `gateCache.wrote` and `gateCache.filledCanary`. So a whole-suite canary is paid at most once per
+  `gateCache.wrote` and `gateCache.filledCanary`. So a baseline-scope canary is paid at most once per
   key, including after `baseline --no-canary`.
 - *Serve:* a cached canary is served **only when no pending mutant needs narrow attestation**
   (`needsNarrowCanary`, the same predicate the gate partitions on). `mutate.mjs baseline` files a

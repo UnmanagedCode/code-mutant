@@ -338,7 +338,7 @@ and not of the mutants. `baseline --no-canary` measures no canary, and its entry
 measured a fresh, baseline-scope, `KILLED` canary (a run with nothing narrow-canary-eligible) writes
 that canary into the same entry under the same key, carrying every other field over verbatim and
 stamping `canaryMeasuredAt`. It never overwrites a stored canary, and never files a narrow, mixed,
-failed, `not-established` or partial one. So a whole-suite canary is paid at most once per key.
+failed, `not-established` or partial one. So a baseline-scope canary is paid at most once per key.
 
 A served gate is never dressed up as a measured one: its outcome is verbatim (`not-established` stays
 `not-established`), `fromCache: true` sits beside it in `--json` and on the printed gate line, and the
@@ -355,7 +355,7 @@ its share of `totalMs`:
 
 | Bucket | What it is |
 |---|---|
-| `gatesMs` | Mostly, but **not always entirely, fixed per invocation** — the block names the fixed part when they differ. A canary at `scope: "baseline"` is a whole-suite run and is fixed; a `"narrow"` one is a run per *distinct* scope, so it scales with the mutants in the run and batching cannot spread it. `0` means **no gate command ran here** — in practice both were served from cache (see [Gate caching](#gate-caching)), though a gate record can also carry `durationMs: 0` with no cache involved. On a narrowing run against a cached baseline, `gatesMs` covers the canary only, since a narrow canary is never cached. |
+| `gatesMs` | Mostly, but **not always entirely, fixed per invocation** — the block names the fixed part when they differ. A canary at `scope: "baseline"` is a run of the baseline gate's command and is fixed; a `"narrow"` one is a run per *distinct* scope, so it scales with the mutants in the run and batching cannot spread it. `0` means **no gate command ran here** — in practice both were served from cache (see [Gate caching](#gate-caching)), though a gate record can also carry `durationMs: 0` with no cache involved. On a narrowing run against a cached baseline, `gatesMs` covers the canary only, since a narrow canary is never cached. |
 | `narrowBaselinesMs` | One measured command per *distinct* scope, so N mutants at one scope cost one entry. |
 | `mutantsMs` | A sum of per-mutant wall clocks, so under `--jobs N` it legitimately exceeds `totalMs` and prints above 100%. |
 
