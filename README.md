@@ -127,8 +127,8 @@ own config, say — writes `routes` instead of one `runner`. Each route names th
 command runs the routes through one driver (`lib/route-exec.mjs`), and each route's output is read
 by its own adapter:
 
-- **Baseline:** green only when **every non-opt-in route** is green on its own — a route that ran zero tests
-  fails it, whatever the other routes did.
+- **Baseline:** green only when **every route its gates run** ([The gates' route scope](mutants.schema.md#the-gates-route-scope)) is green on its own — a
+  route that ran zero tests fails it, whatever the other routes did.
 - **Narrowing:** a mutant runs only the routes owning one of its `expectFail`/`expectPass` files;
   a route with no ref in scope does not run (`narrowing.routes`). A ref no route owns is refused.
 - **Canary:** must fire **in every route** the judging command runs.
@@ -267,7 +267,8 @@ skipped one.
   `baseBranch` has nothing committed to mutate, so mutating it would report a false clean sweep).
   A dirty-tree measurement is the recurring real-world failure this guards against.
 - **baseline** — an unmutated run of `baselineCommand` in the same isolated copy, recording
-  pass/fail/skip. It must be green — under [routing](#routing), green in every route on its own.
+  pass/fail/skip. It must be green — under [routing](#routing), green in every route the gates run, each on
+  its own ([The gates' route scope](mutants.schema.md#the-gates-route-scope)).
 - **canary** — a guaranteed-failing mutation the runner synthesizes at gate time, confirms comes
   back `KILLED`, then discards. It is never written to the repo. Without it, a test command that
   silently runs zero tests would report every mutant `SURVIVED` (every finding false), and one that
@@ -302,8 +303,8 @@ records' full shapes are in [`mutants.schema.md`](mutants.schema.md#the-clean-tr
 
 ### Gate caching
 
-The **baseline** gate is a fixed cost paid once per invocation, independent of mutant count — which
-is what makes it cacheable. Measured at ~135,000 ms — **98.6% of a single-mutant invocation** on this
+The **baseline** gate is a fixed cost paid once per invocation, independent of mutant count — under
+routing the mutants only choose which routes it runs ([The gates' route scope](mutants.schema.md#the-gates-route-scope)) — which is what makes it cacheable. Measured at ~135,000 ms — **98.6% of a single-mutant invocation** on this
 workspace's own suite — *before the canary was narrowed*, when the whole gate floor was two full
 `baselineCommand` runs and so was fixed end to end. It is now one full run plus one narrow run per
 resolved scope, and only the full run is fixed: a narrow canary is one run per scope, so it scales
@@ -322,7 +323,9 @@ Phase A, before any concurrency exists), the gitignored `.mutation/` catalog —
 `IMPRECISE` mutant and re-running costs no gates — and **gitignored state the suite reads**
 (`node_modules/`, a `.env`, a local DB, environment variables). That last one is the one real
 exposure: `--remeasure-gates` skips the lookup, measures both gates in full and overwrites the entry,
-and is the correction path when a key matches but something outside it moved.
+and is the correction path when a key matches but something outside it moved. Under routing the
+gates' route set is in the key, and a scoped invocation may be served a whole-harness entry, which
+then gates it whole ([The gates' route scope](mutants.schema.md#the-gates-route-scope)).
 
 **A narrow-scope canary is never served from cache, by design** — it attests about commands derived
 from the catalog, which the key deliberately does not cover, so a narrowing run measures it every
@@ -335,7 +338,7 @@ and not of the mutants. `baseline --no-canary` measures no canary, and its entry
 measured a fresh, baseline-scope, `KILLED` canary (a run with nothing narrow-canary-eligible) writes
 that canary into the same entry under the same key, carrying every other field over verbatim and
 stamping `canaryMeasuredAt`. It never overwrites a stored canary, and never files a narrow, mixed,
-failed, `not-established` or partial one. So a whole-suite canary is paid at most once per key.
+failed, `not-established` or partial one. So a baseline-scope canary is paid at most once per key.
 
 A served gate is never dressed up as a measured one: its outcome is verbatim (`not-established` stays
 `not-established`), `fromCache: true` sits beside it in `--json` and on the printed gate line, and the
@@ -352,7 +355,7 @@ its share of `totalMs`:
 
 | Bucket | What it is |
 |---|---|
-| `gatesMs` | Mostly, but **not always entirely, fixed per invocation** — the block names the fixed part when they differ. A canary at `scope: "baseline"` is a whole-suite run and is fixed; a `"narrow"` one is a run per *distinct* scope, so it scales with the mutants in the run and batching cannot spread it. `0` means **no gate command ran here** — in practice both were served from cache (see [Gate caching](#gate-caching)), though a gate record can also carry `durationMs: 0` with no cache involved. On a narrowing run against a cached baseline, `gatesMs` covers the canary only, since a narrow canary is never cached. |
+| `gatesMs` | Mostly, but **not always entirely, fixed per invocation** — the block names the fixed part when they differ. A canary at `scope: "baseline"` is a run of the baseline gate's command and is fixed; a `"narrow"` one is a run per *distinct* scope, so it scales with the mutants in the run and batching cannot spread it. `0` means **no gate command ran here** — in practice both were served from cache (see [Gate caching](#gate-caching)), though a gate record can also carry `durationMs: 0` with no cache involved. On a narrowing run against a cached baseline, `gatesMs` covers the canary only, since a narrow canary is never cached. |
 | `narrowBaselinesMs` | One measured command per *distinct* scope, so N mutants at one scope cost one entry. |
 | `mutantsMs` | A sum of per-mutant wall clocks, so under `--jobs N` it legitimately exceeds `totalMs` and prints above 100%. |
 
@@ -455,7 +458,8 @@ relative `../` path, which resolves differently from a main checkout and from a 
 
 ```
 node mutate.mjs baseline                    [--copy|--in-place] [--allow-dirty]
-                                            [--remeasure-gates] [--no-canary] [--json]
+                                            [--remeasure-gates] [--no-canary]
+                                            [--route <name> ...] [--json]
 node mutate.mjs run [--id <id> ...] [--all] [--learn] [--copy|--in-place] [--jobs N]
                     [--base <branch>] [--allow-dirty] [--resume] [--remeasure-gates] [--json]
 node mutate.mjs validate                    [--json]
@@ -476,7 +480,8 @@ subcommand is *for*.
   and reports it `not-established` — for a baseline taken only to warm the gate cache before `run`,
   since every `run` establishes its own canary at the scope it grades; it is a usage error on every
   other subcommand. Nothing else in the run is trustworthy until this is green and the canary comes
-  back `KILLED` — here, or with `--no-canary`, in the `run` that grades.
+  back `KILLED` — here, or with `--no-canary`, in the `run` that grades. In a routed harness,
+  `--route <name>` (repeatable, `baseline` only) gates only the named routes ([The gates' route scope](mutants.schema.md#the-gates-route-scope)).
 - **`run`** — runs one or more catalog mutants (`.mutation/mutants.json`) by `--id`, or every mutant
   with `--all`. Per mutant: resolve anchor(s)/patch → refuse an ambiguous or no-op edit → measure
   the narrow scope unmutated → apply in the isolated copy → run the narrowed `testCommand` →

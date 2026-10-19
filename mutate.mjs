@@ -26,6 +26,7 @@ import { ConfigError, NoHarnessError, loadConfig } from './lib/config.mjs';
 import { checkCleanTree } from './lib/gates.mjs';
 import { installGuard } from './lib/guard.mjs';
 import { EXIT_CODE_MEANINGS, ExitCode, exitCodeFor, formatReport, toJson } from './lib/report.mjs';
+import { requestedGateRoutes } from './lib/gate-scope.mjs';
 import { loadHarness } from './lib/routing.mjs';
 import { execute } from './lib/runner.mjs';
 import { SnapshotError } from './lib/snapshot.mjs';
@@ -37,7 +38,8 @@ const HELP = `code-mutant -- mutation-verified coverage proving
 
 USAGE
   node mutate.mjs baseline                    [--copy|--in-place] [--allow-dirty]
-                                              [--remeasure-gates] [--no-canary] [--json]
+                                              [--remeasure-gates] [--no-canary]
+                                              [--route <name> ...] [--json]
   node mutate.mjs run [--id <id> ...] [--all] [--learn] [--copy|--in-place] [--jobs N]
                       [--base <branch>] [--allow-dirty] [--resume] [--remeasure-gates] [--json]
   node mutate.mjs validate                    [--json]
@@ -59,7 +61,8 @@ COMMANDS
                reports it NOT-ESTABLISHED, for a baseline taken to warm the gate
                cache before run. Nothing else is trustworthy until this is green
                and the canary comes back KILLED -- here, or with --no-canary, in
-               the run that grades.
+               the run that grades. Under "routes" it gates every non-opt-in
+               route unless --route names the ones to gate.
   run          Run catalog mutants from .mutation/mutants.json. Per mutant:
                resolve site(s) -> refuse an ambiguous or no-op edit -> measure the
                narrow scope unmutated -> apply -> run -> classify -> restore.
@@ -69,7 +72,9 @@ COMMANDS
                this exact tree, labelled fromCache and never promoted; the
                canary is served only when it ran at baseline scope, and a
                narrowed one is measured every invocation. --remeasure-gates
-               forces both. See TRUST GATES.
+               forces both. Under "routes", run and probe gate only the
+               non-opt-in routes their mutants run (every one when a mutant's
+               routes cannot be known before running). See TRUST GATES.
   validate     Resolve every catalog site against the working tree and report
                what would refuse -- RUNNING NO TESTS, so it returns in about a
                second. A pre-flight, NOT a gate: it establishes nothing and
@@ -130,6 +135,12 @@ FLAGS
                      baseline-scope canary against the same key fills that slot
                      once. A usage error on every other command, since each run
                      and probe establishes its own canary at the scope it grades.
+  --route <name>     baseline only, routed harnesses only; repeatable: gate only
+                     these non-opt-in routes (the rest read SKIPPED
+                     out-of-scope, never passed). The gate cache keys on the
+                     set. A usage error on every other command, since run and
+                     probe gate the routes their own mutants run. See "The
+                     gates' route scope" in mutants.schema.md.
   --file <path>      probe: file to mutate.
   --anchor <text>    probe: exact substring to replace; must match exactly once.
   --replace <text>   probe: replacement text; must differ from the anchor.
@@ -222,7 +233,9 @@ config.json (harness/mutation/config.json)
                    A test file belongs to the first route whose "tests" globs
                    ("*", "**/", no braces) match it; each route's commands
                    run only for its own files, and the baseline and canary
-                   must hold in every non-opt-in route. Counted adapters whose refs name
+                   must hold in every route the invocation's gates run (the
+                   non-opt-in routes its mutants run, or every one when that
+                   cannot be shown). Counted adapters whose refs name
                    files only. A route with "optIn": true (no baselineCommand)
                    is skipped by the baseline and the baseline-scope canary
                    and runs only when a ref names one of its files, with the
@@ -257,7 +270,8 @@ TRUST GATES
                      report a false clean sweep. NOT-ESTABLISHED (not a
                      refusal) when no baseBranch is configured, or it names the
                      branch HEAD is already on.
-  baseline           See the baseline command above.
+  baseline           See the baseline command above. Routed: only the
+                     invocation's gate scope (see --route).
   canary             Synthesised per run, never committed. Run against each
                      command that JUDGES a mutant (its narrowed scope), once per
                      distinct scope, and against baselineCommand for anything
@@ -311,7 +325,7 @@ const BOOLEAN_FLAGS = new Set([
   '--all', '--copy', '--in-place', '--json', '--help', '-h', '--allow-dirty', '--learn', '--resume',
   '--remeasure-gates', '--no-canary',
 ]);
-const REPEATABLE_FLAGS = new Set(['--id', '--expect-fail', '--expect-pass']);
+const REPEATABLE_FLAGS = new Set(['--id', '--expect-fail', '--expect-pass', '--route']);
 const VALUE_FLAGS = new Set([
   '--jobs', '--base', '--file', '--anchor', '--replace', '--patch-file', ...REPEATABLE_FLAGS,
 ]);
@@ -349,6 +363,7 @@ export function parseArgs(argv) {
 
 const REMEASURE_OUT_OF_SCOPE = '--remeasure-gates only applies to `baseline`, `run` and `probe` -- the commands that run the gates (try --help)';
 const NO_CANARY_OUT_OF_SCOPE = '--no-canary only applies to `baseline` -- every `run` and `probe` establishes its own canary at the scope it grades (try --help)';
+const ROUTE_OUT_OF_SCOPE = '--route only applies to `baseline` -- every `run` and `probe` gates the routes its own mutants run (try --help)';
 
 function isolationOverride(flags) {
   if (flags['--copy'] && flags['--in-place']) {
@@ -363,8 +378,8 @@ function runId() {
   return `${new Date().toISOString().replace(/[:.]/g, '-')}`;
 }
 
-async function buildContext(flags, log, {
-  allowBaseOverride = false, allowLearn = false, allowRemeasure = false, allowNoCanary = false,
+async function buildContext(flags, lists, log, {
+  allowBaseOverride = false, allowLearn = false, allowRemeasure = false, allowNoCanary = false, allowRoute = false,
 } = {}) {
   const repoRoot = findRepoRoot(process.cwd());
   const jobsFlag = flags['--jobs'] === undefined ? undefined : Number(flags['--jobs']);
@@ -382,6 +397,9 @@ async function buildContext(flags, log, {
   }
   if (!allowNoCanary && flags['--no-canary']) {
     throw new Error(NO_CANARY_OUT_OF_SCOPE);
+  }
+  if (!allowRoute && lists['--route']) {
+    throw new Error(ROUTE_OUT_OF_SCOPE);
   }
   const { config, adapter } = await loadHarness(loadConfig({
     repoRoot,
@@ -410,8 +428,12 @@ function emit(report, flags) {
   return exitCodeFor(report);
 }
 
-async function commandBaseline(flags, log) {
-  const { config, adapter } = await buildContext(flags, log, { allowRemeasure: true, allowNoCanary: true });
+async function commandBaseline(flags, lists, log) {
+  const { config, adapter } = await buildContext(flags, lists, log, {
+    allowRemeasure: true, allowNoCanary: true, allowRoute: true,
+  });
+  // Validated before any gate runs, so a typo is a usage error, not a red gate.
+  const gateRoutes = requestedGateRoutes(adapter, lists['--route']);
   // Both gates and nothing else: `execute` with an empty mutant list runs the
   // baseline measurement and the canary, which is what the reviewer's gate step
   // needs to see in one command. The clean-tree check runs here too (a baseline
@@ -426,13 +448,14 @@ async function commandBaseline(flags, log) {
     allowDirty: Boolean(flags['--allow-dirty']),
     remeasureGates: Boolean(flags['--remeasure-gates']),
     skipCanary: Boolean(flags['--no-canary']),
+    gateRoutes,
   });
   report.command = 'baseline';
   return emit(report, flags);
 }
 
 async function commandRun(flags, lists, log) {
-  const { config, adapter, repoRoot } = await buildContext(flags, log, {
+  const { config, adapter, repoRoot } = await buildContext(flags, lists, log, {
     allowBaseOverride: true, allowLearn: true, allowRemeasure: true,
   });
   const ids = lists['--id'] ?? [];
@@ -534,7 +557,7 @@ function probeForm(flags, ids) {
 }
 
 async function commandProbe(flags, lists, log) {
-  const { config, adapter, repoRoot } = await buildContext(flags, log, {
+  const { config, adapter, repoRoot } = await buildContext(flags, lists, log, {
     allowLearn: true, allowRemeasure: true,
   });
   const ids = lists['--id'] ?? [];
@@ -601,8 +624,8 @@ async function commandProbe(flags, lists, log) {
   return code;
 }
 
-async function commandValidate(flags, log) {
-  const { config, adapter, repoRoot } = await buildContext(flags, log);
+async function commandValidate(flags, lists, log) {
+  const { config, adapter, repoRoot } = await buildContext(flags, lists, log);
   // No workspace is opened and no gate is run: validate resolves against the
   // working tree exactly as it stands, which is the point -- the anchor that went
   // stale did so against the implementer's current, uncommitted edits.
@@ -631,7 +654,7 @@ function configuredBaseBranch(repoRoot, log) {
   }
 }
 
-async function commandCandidates(flags, log) {
+async function commandCandidates(flags, lists, log) {
   const repoRoot = findRepoRoot(process.cwd());
   // `candidates` does not build a run context, so the flag-scope guards in
   // buildContext never see it. Stated rather than silently ignored: this command
@@ -641,6 +664,9 @@ async function commandCandidates(flags, log) {
   }
   if (flags['--no-canary']) {
     throw new Error(NO_CANARY_OUT_OF_SCOPE);
+  }
+  if (lists['--route']) {
+    throw new Error(ROUTE_OUT_OF_SCOPE);
   }
   // `--base` alone keeps working in a repo with no harness at all, which is why
   // config is only consulted when the flag is absent -- but when it is absent,
@@ -715,11 +741,11 @@ export async function main(argv) {
 
   try {
     switch (command) {
-      case 'baseline': return await commandBaseline(flags, log);
+      case 'baseline': return await commandBaseline(flags, lists, log);
       case 'run': return await commandRun(flags, lists, log);
-      case 'validate': return await commandValidate(flags, log);
+      case 'validate': return await commandValidate(flags, lists, log);
       case 'probe': return await commandProbe(flags, lists, log);
-      case 'candidates': return await commandCandidates(flags, log);
+      case 'candidates': return await commandCandidates(flags, lists, log);
       default:
         process.stderr.write(`code-mutant: unknown command ${JSON.stringify(command)} (try --help)\n`);
         return ExitCode.USAGE;
