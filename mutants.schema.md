@@ -163,8 +163,8 @@ order, whose `tests` match it. A ref matching no route is refused for that mutan
 ERROR naming every route's patterns); `validate` reports it as `no-narrow-scope`.
 
 **What runs:** every measured command is one invocation of the route driver
-(`lib/route-exec.mjs`) over route/command pairs. The baseline runs every route's
-`baselineCommand` (an opt-in route has none and is skipped); a mutant's narrowed command runs only the routes that own one of its scope files,
+(`lib/route-exec.mjs`) over route/command pairs. The baseline runs the `baselineCommand` of every
+route in the [gates' route scope](#the-gates-route-scope) (an opt-in route has none and is never in it); a mutant's narrowed command runs only the routes that own one of its scope files,
 each with that route's own `{tests}` substitution — a route with no ref in scope **does not run**,
 and `narrowing.routes` lists the ones that did. The driver runs every route even after one fails,
 each in the runner's process group (a timeout kill reaches them all) with its own report subdir
@@ -174,10 +174,10 @@ each in the runner's process group (a timeout kill reaches them all) with its ow
 
 | Where | Line |
 |---|---|
-| Header | `routes: <name>=<runner> [<tests>]; …`, with ` (opt-in)` after an opt-in route |
+| Header | `routes: <name>=<runner> [<tests>]; …`, with ` (opt-in)` after an opt-in route; then `gate scope: <routes>  (<detail>)` |
 | Baseline gate | one line per route under it: `- <route>  green\|NOT GREEN  <p/f/s> (p/f/s), exit <n>  [<detail>]` |
-| Baseline gate, opt-in | `- <route>  SKIPPED  opt-in: …` for each opt-in route, after the route lines |
-| Canary gate | one line per route under the baseline-scope canary and under each narrow scope: `- <route> KILLED via <target>`, or `- <route> NOT FIRED  <detail>`; `- <route> SKIPPED  opt-in: …` for each opt-in route under the baseline-scope canary. A narrow scope that cannot be attested prints `NOT-ESTABLISHED` |
+| Baseline gate, skipped | `- <route>  SKIPPED  <reason>: …` for each route in `skippedRoutes` (`opt-in`, then `out-of-scope`), after the route lines |
+| Canary gate | one line per route under the baseline-scope canary and under each narrow scope: `- <route> KILLED via <target>`, or `- <route> NOT FIRED  <detail>`; `- <route> SKIPPED  <reason>: …` for each route in `skippedRoutes` under the baseline-scope canary. A narrow scope that cannot be attested prints `NOT-ESTABLISHED` |
 | Survivor block | `routes run:   <routes> (<route>: no ref in scope, …)` — which runners judged the survivor, and which never ran |
 
 **How the routes' results combine** — each route group is parsed by its own adapter and judged on
@@ -188,6 +188,40 @@ its own before the merged counters are:
 | Baseline / narrow baseline | Green only when **every route group is green on its own**: no failures, no compile break, exit 0, `ran > 0`, no truncated/incomplete/spawn error. A route that ran zero tests fails it (`route "<name>": the command ran ZERO tests…`). |
 | Canary | Must fire **in every route the judging command runs** — see [The canary's scope](#the-canarys-scope). |
 | Mutant run | Before grading: a group that failed to start, was truncated or had incomplete output is `ERROR` (`command-failed-to-start` / `output-truncated` / `output-incomplete`); after the merged `compileError` check, a group that ran zero tests is `scope-empty` and a group exiting non-zero naming no failure is `unexplained-exit` — each detail names the route. Then the **merged** failing set is graded against `expectFail`/`expectPass` as usual. |
+
+### The gates' route scope
+
+The baseline gate and the baseline-scope canary run only the **gate scope**: the non-opt-in routes
+that judge a mutant in this invocation. No verdict comes from the baseline gate — each comes from a
+mutant's narrowed command, which runs only `narrowing.routes` and has its own narrow baseline and
+canary — so a route outside every mutant's `narrowing.routes` can change no verdict. The scope is
+decided before any command runs (`deriveGateScope`, `lib/gate-scope.mjs`), and reported as
+`gateScope: { routes, reason, detail }` (routed only) and as a `gate scope:` header line.
+
+| `reason` | When | Gates run |
+|---|---|---|
+| `mutants` | Every selected mutant's routes are known statically: file or `"names"` narrowing, `--learn` **with** refs, a ref naming a file this tree lacks (routing is a glob match). Reused (`--resume`) mutants count | The union of their non-opt-in `narrowing.routes`; a union covering every non-opt-in route is the whole harness, with the same key and records as an unscoped run |
+| `unscopable-mutant` | **Any one** selected mutant whose routes are not known: a per-mutant `narrowCommand`, the `--learn` no-refs fallback, a narrowed command equal to `baselineCommand`, or a mutant that fails to plan (no refs in counted mode, a ref no route owns). `detail` names it | Every non-opt-in route |
+| `opt-in-only` | Every mutant runs only opt-in routes (the baseline needs a route to run) | Every non-opt-in route |
+| `no-mutants` | A bare `baseline`, or an empty catalog | Every non-opt-in route |
+| `route-flag` | `baseline --route <name> …` | The named routes; naming every non-opt-in route is the whole harness |
+| `whole-cache-entry` | A scoped invocation was served a whole-harness gate-cache entry ([Caching the gates](#caching-the-gates)) | Every non-opt-in route |
+
+- **Left-out routes** appear in `skippedRoutes` with `reason: "out-of-scope"` (after the `opt-in`
+  ones), never in `groups` and never as passed. Exit 0's "the gates passed" covers the gate scope only.
+- **`--route <name>`** — `baseline` only, repeatable, deduped into declared order. An unknown route,
+  an opt-in route, `--route` on a single-runner harness, or `--route` on any other command is a usage
+  error (exit 4). `run` and `probe` always derive their scope from their mutants.
+- **Every route a planned mutant runs is inside the scope**, asserted after planning: a mismatch is a
+  thrown internal error, never a verdict.
+
+What a left-out route cannot affect:
+
+| Shape | Why it is safe |
+|---|---|
+| `setup` / `teardown` | Top-level only — a route has no hooks — and they wrap every measured command, the scoped baseline included. |
+| A check inside a left-out route's `baselineCommand` (a typecheck before the tests) | Narrowed commands run `testCommand`, never `baselineCommand`, so it never judged a mutant. |
+| One route's tests reading another route's baseline side effects (a build output, a cache) | A gate-cache hit already skips the baseline entirely, so no verdict can rely on it. A route that needs it fails its own narrow baseline and its mutants `ERROR`. A build step one route needs belongs in `setup`. |
 
 ## The canary's scope
 
@@ -200,7 +234,7 @@ it. `gates.canary.scope` says which:
 | `scope` | When | What ran |
 |---|---|---|
 | `"narrow"` | Every pending mutant is narrow-canary-eligible | One canary per **distinct** `narrowing.command`, injected into that scope's own files |
-| `"baseline"` | Nothing is eligible — including `baseline`, an empty catalog and a fully resumed run | One canary against `baselineCommand`, exactly as before: candidates discovered from `testFilePatterns`, the mutants' scopes and the journalled target |
+| `"baseline"` | Nothing is eligible — including `baseline`, an empty catalog and a fully resumed run | One canary against `baselineCommand` (routed: the baseline gate's command, over the [gates' route scope](#the-gates-route-scope)): candidates discovered from `testFilePatterns`, the mutants' scopes and the journalled target |
 | `"mixed"` | Both | Both of the above; `scopes[]` holds the narrow half |
 
 A mutant is **narrow-canary-eligible** only when all of these hold. Each excluded case names a
@@ -223,7 +257,8 @@ otherwise it is `FAILED`, and its detail names the unattested routes. Each recor
 `routes: [{ route, status, target, attempts, durationMs, detail }]`. The aggregate rules below are
 unchanged. A baseline-scope canary therefore costs one composite baseline run per route (cacheable,
 as before); a narrow scope spanning two routes costs two narrow runs. The baseline-scope canary
-runs only the **non-opt-in** routes and lists the rest in `skippedRoutes`.
+runs only the routes in the [gates' route scope](#the-gates-route-scope) and lists the rest in
+`skippedRoutes`.
 
 **Opt-in routes in a narrow scope.** A narrow-eligible command that runs an opt-in route is attested
 like any other: the canary must fire in that route, in its own scope files, and its narrow baseline
@@ -433,14 +468,16 @@ finding can be pointed at exactly the commit it was found against.
                                                            // failure to name); [] only when green
                 groups: [ { route, runner, counts, exitCode, green, detail, durationMs } ],
                                                            // groups: ROUTED ONLY -- each route judged on its own
-                skippedRoutes: [ { route, runner, reason: "opt-in" } ] },
-                                                           // ROUTED-WITH-OPT-IN ONLY -- never in groups
+                skippedRoutes: [ { route, runner, reason: "opt-in"|"out-of-scope" } ] },
+                                                           // ROUTED ONLY, and only when a route is left out:
+                                                           // opt-in ones first, then those outside gateScope.
+                                                           // Never in groups
     canary:   { outcome: "passed"|"failed"|"not-established"|"partial",
                 status: "KILLED"|"FAILED"|"NOT-ESTABLISHED"|"PARTIAL",
                 scope: "baseline"|"narrow"|"mixed"|null,   // WHICH COMMAND(S) THIS GATE ATTESTS ABOUT;
                                                       // null only when skipped
-                grade, command,                       // command: baselineCommand at baseline/mixed, null at
-                                                      // narrow and when skipped
+                grade, command,                       // command: the baseline gate's command at baseline/mixed,
+                                                      // null at narrow and when skipped
                 target,                               // the BASELINE half's target; null at pure narrow scope
                 attempts: [ { target, durationMs, why } ],   // the baseline half's: every candidate tried and why
                 scopes: [ {                                  // null when scope === "baseline"
@@ -451,8 +488,9 @@ finding can be pointed at exactly the commit it was found against.
                 } ] | null,
                 routes: [ { route, status, target, attempts, durationMs, detail } ],
                                                       // ROUTED ONLY: the baseline half's per-route canaries
-                skippedRoutes: [ { route, runner, reason: "opt-in" } ],
-                                                      // ROUTED-WITH-OPT-IN ONLY: routes the baseline half skipped
+                skippedRoutes: [ { route, runner, reason: "opt-in"|"out-of-scope" } ],
+                                                      // ROUTED ONLY: routes the baseline half skipped, as on
+                                                      // the baseline
                 durationMs,                           // summed across every canary this gate ran
                 detail,
                 skipped: null|"no-canary",            // "no-canary": `baseline --no-canary` attempted none
@@ -471,6 +509,10 @@ finding can be pointed at exactly the commit it was found against.
                                                 // a remedy left to name
   resumed:   { journal, key, reused, ran } | null,   // non-null iff --resume was passed
   resumable: { key, available } | null,             // ADVISORY: a journal matches and --resume was NOT passed
+  gateScope: { routes: [name], reason, detail },   // ROUTED ONLY -- absent for a single runner. The routes
+                                                   // the baseline and baseline-scope canary ran; reason is one
+                                                   // of GateScopeReason (lib/gate-scope.mjs), see "The gates'
+                                                   // route scope"
   gateCache: { status: "hit"|"miss"|"bypassed",
                key: string|null, file: string|null,   // both null on a FORCED MISS -- a tree no key can describe
                measuredAt: string|null, measuredSha: string|null,   // provenance; non-null only on a hit
@@ -681,8 +723,9 @@ when the floor was two full `baselineCommand` runs and the whole gate cost was t
 ~135,000 ms, **98.6% of a single-mutant invocation**. The floor is now one full run plus one narrow
 run per resolved scope ([The canary's scope](#the-canarys-scope)), and only the full run is fixed —
 a narrow canary scales with the mutants in the run, which is why
-[`timings.gatesMs`](#where-a-runs-wall-time-went) is not all fixed cost. The baseline half does not depend on which mutants are in the run, so
-it is persisted and reused against a tree that has not changed.
+[`timings.gatesMs`](#where-a-runs-wall-time-went) is not all fixed cost. The baseline half depends on the mutants in the run
+only through the [gates' route scope](#the-gates-route-scope), which is in the key, so it is
+persisted and reused against a tree that has not changed.
 
 **NARROW-SCOPE CANARIES ARE NEVER CACHED, BY DESIGN — on the serve side as well as the write side.**
 
@@ -731,7 +774,7 @@ with the same lifetime — one review loop, gitignored, dies with the worktree. 
 (temp file + rename in the same directory), so a SIGKILL mid-write leaves no half-entry. One entry
 per distinct tree+config; no pruning.
 
-**`<key>` is `sha256` over six inputs, truncated to 32 hex** (the same shape as the journal key):
+**`<key>` is `sha256` over these inputs, truncated to 32 hex** (the same shape as the journal key):
 
 | Input | Derivation | Why it is in the key |
 |---|---|---|
@@ -741,6 +784,15 @@ per distinct tree+config; no pruning.
 | `isolation` | `"in-place"` \| `"copy"`, after any `--copy`/`--in-place` override | A copy is not a git repository, so a suite that shells out to git is green in-place and red in a copy. Two different measurements. |
 | `harnessFingerprint` | `sha256` over the sorted `(relPath, sha256(bytes))` of `mutate.mjs` and every `lib/**/*.mjs` | The harness version, self-maintaining. `package.json` carries no `version` and this is a private plugin merged with no release step, so a version string only invalidates when someone remembers to bump it. A source digest cannot drift from the code it identifies. |
 | `runtime` | `{version, platform, arch}` from `process` | A node upgrade changes what a suite does without changing a byte of the tree, and a bind-mounted worktree can be entered from two platforms. |
+| `gateRoutes` | The [gates' route scope](#the-gates-route-scope), as route names in declared order — **present only when it is a strict subset** of the non-opt-in routes | The gates measured those routes and no others. Absent for a whole-harness scope and for a single runner, so those keys are unchanged, and no subset measurement can be filed under a whole-harness key. |
+
+**Lookup order under routing.** A scoped invocation looks up its own key, then the whole-harness key
+(the same inputs without `gateRoutes`). A whole-harness hit **promotes** the invocation: its gates
+become the whole harness's (`gateScope.reason: "whole-cache-entry"`), the baseline record is served
+verbatim, and any canary is served, measured or filled at whole scope. So a scoped invocation is
+gated by a measurement of a superset of its routes, and a subset canary is never filled into a
+whole-harness entry. No other cross-scope match is made. `--remeasure-gates` skips both lookups and
+overwrites the key of the scope it measured.
 
 **The forced miss.** Some trees cannot be described by any key, and the answer is always a miss that
 also **writes nothing** — `gateCache.status: "miss"` with `key` and `file` both `null` and the reason
@@ -771,7 +823,8 @@ not a cure for one. Three causes:
 - **`.mutation/` itself, the catalog included** — gitignored, so `git status` never reports it. Required
   for correctness (the cache writing its own entry must not invalidate its own key), and right on the
   merits: the baseline-scope canary proves that *`baselineCommand` observes a deliberate break in a
-  file it exercises*, a property of the command and not of the mutants. That rationale holds for
+  file it exercises*, a property of the command and not of the mutants. (Under routing the catalog
+  reaches the key only as the derived `gateRoutes`, which names the command measured.) That rationale holds for
   exactly the records that are cached, and only because a narrow-scope canary — which *is* a property
   of the catalog — is never one of them. **Consequence:** rewriting an `IMPRECISE` mutant and
   re-running costs no gates (the baseline half; its canary is re-measured either way).

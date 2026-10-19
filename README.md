@@ -127,11 +127,15 @@ own config, say — writes `routes` instead of one `runner`. Each route names th
 command runs the routes through one driver (`lib/route-exec.mjs`), and each route's output is read
 by its own adapter:
 
-- **Baseline:** green only when **every non-opt-in route** is green on its own — a route that ran zero tests
-  fails it, whatever the other routes did.
+- **Baseline:** green only when **every route its gates run** is green on its own — a route that ran zero tests
+  fails it, whatever the other routes did. A `run` or `probe` gates only the non-opt-in routes its
+  mutants run (every one when a mutant's routes cannot be known before running); a bare `baseline`
+  gates every non-opt-in route, or those `--route` names. A route left out reads `SKIPPED`
+  `out-of-scope`, never passed — see [The gates' route scope](mutants.schema.md#the-gates-route-scope).
 - **Narrowing:** a mutant runs only the routes owning one of its `expectFail`/`expectPass` files;
   a route with no ref in scope does not run (`narrowing.routes`). A ref no route owns is refused.
-- **Canary:** must fire **in every route** the judging command runs.
+- **Canary:** must fire **in every route** the judging command runs; the baseline-scope canary runs the
+  gates' routes.
 - **Opt-in route:** `"optIn": true` (with no `baselineCommand`) is for a suite too slow to run in
   every baseline, such as Playwright. The baseline and the baseline-scope canary skip it
   (`skippedRoutes`, printed `SKIPPED`); it runs only for a mutant or probe whose refs name one of its
@@ -267,7 +271,8 @@ skipped one.
   `baseBranch` has nothing committed to mutate, so mutating it would report a false clean sweep).
   A dirty-tree measurement is the recurring real-world failure this guards against.
 - **baseline** — an unmutated run of `baselineCommand` in the same isolated copy, recording
-  pass/fail/skip. It must be green — under [routing](#routing), green in every route on its own.
+  pass/fail/skip. It must be green — under [routing](#routing), green in every route the gates run, each on
+  its own ([The gates' route scope](mutants.schema.md#the-gates-route-scope)).
 - **canary** — a guaranteed-failing mutation the runner synthesizes at gate time, confirms comes
   back `KILLED`, then discards. It is never written to the repo. Without it, a test command that
   silently runs zero tests would report every mutant `SURVIVED` (every finding false), and one that
@@ -322,7 +327,9 @@ Phase A, before any concurrency exists), the gitignored `.mutation/` catalog —
 `IMPRECISE` mutant and re-running costs no gates — and **gitignored state the suite reads**
 (`node_modules/`, a `.env`, a local DB, environment variables). That last one is the one real
 exposure: `--remeasure-gates` skips the lookup, measures both gates in full and overwrites the entry,
-and is the correction path when a key matches but something outside it moved.
+and is the correction path when a key matches but something outside it moved. Under routing the
+gates' route set is in the key, and a scoped invocation may be served a whole-harness entry, which
+then gates it whole ([The gates' route scope](mutants.schema.md#the-gates-route-scope)).
 
 **A narrow-scope canary is never served from cache, by design** — it attests about commands derived
 from the catalog, which the key deliberately does not cover, so a narrowing run measures it every
@@ -455,7 +462,8 @@ relative `../` path, which resolves differently from a main checkout and from a 
 
 ```
 node mutate.mjs baseline                    [--copy|--in-place] [--allow-dirty]
-                                            [--remeasure-gates] [--no-canary] [--json]
+                                            [--remeasure-gates] [--no-canary]
+                                            [--route <name> ...] [--json]
 node mutate.mjs run [--id <id> ...] [--all] [--learn] [--copy|--in-place] [--jobs N]
                     [--base <branch>] [--allow-dirty] [--resume] [--remeasure-gates] [--json]
 node mutate.mjs validate                    [--json]
@@ -476,7 +484,8 @@ subcommand is *for*.
   and reports it `not-established` — for a baseline taken only to warm the gate cache before `run`,
   since every `run` establishes its own canary at the scope it grades; it is a usage error on every
   other subcommand. Nothing else in the run is trustworthy until this is green and the canary comes
-  back `KILLED` — here, or with `--no-canary`, in the `run` that grades.
+  back `KILLED` — here, or with `--no-canary`, in the `run` that grades. In a routed harness,
+  `--route <name>` (repeatable, `baseline` only) gates only the named routes ([The gates' route scope](mutants.schema.md#the-gates-route-scope)).
 - **`run`** — runs one or more catalog mutants (`.mutation/mutants.json`) by `--id`, or every mutant
   with `--all`. Per mutant: resolve anchor(s)/patch → refuse an ambiguous or no-op edit → measure
   the narrow scope unmutated → apply in the isolated copy → run the narrowed `testCommand` →

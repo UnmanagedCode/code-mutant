@@ -209,6 +209,32 @@ describe('gate cache key', () => {
       assert.match(result.reason, /unborn/);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+
+  // Invariant: a whole-harness key is byte-identical with or without an absent
+  // gate scope, and a scoped key can never equal it.
+  test('K6: gateRoutes reaches the key only when it is set', () => {
+    assert.equal(gateCacheKey({ ...BASE_INPUTS, gateRoutes: null }), gateCacheKey(BASE_INPUTS));
+    assert.equal(gateCacheKey({ ...BASE_INPUTS, gateRoutes: undefined }), gateCacheKey(BASE_INPUTS));
+    assert.notEqual(gateCacheKey({ ...BASE_INPUTS, gateRoutes: ['unit'] }), gateCacheKey(BASE_INPUTS));
+    assert.notEqual(
+      gateCacheKey({ ...BASE_INPUTS, gateRoutes: ['unit'] }),
+      gateCacheKey({ ...BASE_INPUTS, gateRoutes: ['other'] }),
+    );
+  });
+
+  // Invariant: a single-runner harness carries no trace of route scoping -- no
+  // report field, no skipped routes, no extra key input.
+  test('K7: a single-runner baseline has no gateScope and no gateRoutes', async () => {
+    const repo = makeRepo({ files: guardFiles(), config: countingConfig(), label: 'gc-single-scope' });
+    try {
+      const { exitCode, report } = await runJson(repo, ['baseline', '--json']);
+      assert.equal(exitCode, 0, JSON.stringify(report?.gates));
+      assert.equal('gateScope' in report, false);
+      assert.equal('skippedRoutes' in report.gates.baseline, false);
+      const [file] = gateEntries(repo);
+      assert.equal('gateRoutes' in readGateEntryFile(repo, file).keyInputs, false);
+    } finally { repo.cleanup(); }
+  });
 });
 
 describe('gate cache', () => {
