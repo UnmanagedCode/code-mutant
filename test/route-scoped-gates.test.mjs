@@ -232,6 +232,38 @@ describe('the gate cache under a route scope', () => {
     } finally { repo.cleanup(); }
   });
 
+  // Invariant: scoped --remeasure-gates skips BOTH lookups (it is neither served
+  // nor promoted by the whole entry) and overwrites only its own scope's key.
+  test('scoped --remeasure-gates re-measures and overwrites only the scoped entry', async () => {
+    const repo = scopedRepo('rsg-cache-remeasure', { otherRed: false });
+    try {
+      // Scoped first: written after the whole entry, `baseline --route` would itself
+      // be served (and promoted) by it.
+      const scoped = await runJson(repo, ['baseline', '--route', 'unit', '--no-canary']);
+      const whole = await runJson(repo, ['baseline', '--no-canary']);
+      assert.equal(scoped.exitCode, 0);
+      assert.equal(whole.exitCode, 0);
+      assert.equal(scoped.report.gateScope.reason, 'route-flag');
+      const bytes = (key) => readFileSync(path.join(repo.root, '.mutation', 'gates', `${key}.json`), 'utf8');
+      const wholeBefore = bytes(whole.report.gateCache.key);
+      const scopedBefore = JSON.parse(bytes(scoped.report.gateCache.key));
+
+      const { exitCode, report } = await runJson(repo, ['run', '--id', 'unit', '--remeasure-gates']);
+      assert.equal(exitCode, 0, JSON.stringify(report.gates));
+      assert.equal(report.gateCache.status, 'bypassed');
+      assert.equal(report.gateCache.key, scoped.report.gateCache.key);
+      assert.equal(report.gateScope.reason, 'mutants');
+      assert.equal(report.gates.baseline.fromCache, false);
+      assert.deepEqual(report.gates.baseline.groups.map((g) => g.route), ['unit']);
+
+      assert.equal(gateFiles(repo).length, 2);
+      assert.equal(bytes(whole.report.gateCache.key), wholeBefore, 'the whole-harness entry is untouched');
+      const scopedAfter = JSON.parse(bytes(scoped.report.gateCache.key));
+      assert.notEqual(scopedAfter.measuredAt, scopedBefore.measuredAt, 'the scoped entry was overwritten');
+      assert.deepEqual(scopedAfter.keyInputs.gateRoutes, ['unit']);
+    } finally { repo.cleanup(); }
+  });
+
   // Invariant: a scoped entry is reused by a later invocation of the same scope.
   test('baseline --route unit serves a later run scoped to unit', async () => {
     const repo = scopedRepo('rsg-cache-scoped', { otherRed: false });

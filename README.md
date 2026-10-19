@@ -127,15 +127,11 @@ own config, say — writes `routes` instead of one `runner`. Each route names th
 command runs the routes through one driver (`lib/route-exec.mjs`), and each route's output is read
 by its own adapter:
 
-- **Baseline:** green only when **every route its gates run** is green on its own — a route that ran zero tests
-  fails it, whatever the other routes did. A `run` or `probe` gates only the non-opt-in routes its
-  mutants run (every one when a mutant's routes cannot be known before running); a bare `baseline`
-  gates every non-opt-in route, or those `--route` names. A route left out reads `SKIPPED`
-  `out-of-scope`, never passed — see [The gates' route scope](mutants.schema.md#the-gates-route-scope).
+- **Baseline:** green only when **every route its gates run** ([The gates' route scope](mutants.schema.md#the-gates-route-scope)) is green on its own — a
+  route that ran zero tests fails it, whatever the other routes did.
 - **Narrowing:** a mutant runs only the routes owning one of its `expectFail`/`expectPass` files;
   a route with no ref in scope does not run (`narrowing.routes`). A ref no route owns is refused.
-- **Canary:** must fire **in every route** the judging command runs; the baseline-scope canary runs the
-  gates' routes.
+- **Canary:** must fire **in every route** the judging command runs.
 - **Opt-in route:** `"optIn": true` (with no `baselineCommand`) is for a suite too slow to run in
   every baseline, such as Playwright. The baseline and the baseline-scope canary skip it
   (`skippedRoutes`, printed `SKIPPED`); it runs only for a mutant or probe whose refs name one of its
@@ -307,8 +303,8 @@ records' full shapes are in [`mutants.schema.md`](mutants.schema.md#the-clean-tr
 
 ### Gate caching
 
-The **baseline** gate is a fixed cost paid once per invocation, independent of mutant count — which
-is what makes it cacheable. Measured at ~135,000 ms — **98.6% of a single-mutant invocation** on this
+The **baseline** gate is a fixed cost paid once per invocation, independent of mutant count — under
+routing the mutants only choose which routes it runs ([The gates' route scope](mutants.schema.md#the-gates-route-scope)) — which is what makes it cacheable. Measured at ~135,000 ms — **98.6% of a single-mutant invocation** on this
 workspace's own suite — *before the canary was narrowed*, when the whole gate floor was two full
 `baselineCommand` runs and so was fixed end to end. It is now one full run plus one narrow run per
 resolved scope, and only the full run is fixed: a narrow canary is one run per scope, so it scales

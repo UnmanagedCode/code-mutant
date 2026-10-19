@@ -145,7 +145,7 @@ writes `routes` in `config.json` instead of the top-level `runner`/`baselineComm
 | Rule | Detail |
 |---|---|
 | Route keys | Exactly `name`, `tests`, `runner`, `baselineCommand`, `testCommand`, `optIn`; any other key (a `test` typo) is a config error naming the allowed keys. |
-| `optIn` | Optional boolean; `false` is the same as absent. A route with `optIn: true` is skipped by the whole-suite baseline and the baseline-scope canary and runs only when a ref names one of its files. It must **not** carry `baselineCommand` (it never runs; refused at load). At least one route must not be opt-in (refused at load): the baseline's `ran > 0` check and the baseline-scope canary need a route to run in. |
+| `optIn` | Optional boolean; `false` is the same as absent. A route with `optIn: true` is never in the [gates' route scope](#the-gates-route-scope), so the baseline and the baseline-scope canary skip it, and runs only when a ref names one of its files. It must **not** carry `baselineCommand` (it never runs; refused at load). At least one route must not be opt-in (refused at load): the baseline's `ran > 0` check and the baseline-scope canary need a route to run in. |
 | `name` | Non-empty, unique, matching `/^[A-Za-z0-9][A-Za-z0-9._-]*$/` (it names a report subdirectory and report lines). |
 | `tests` | Non-empty array of globs in the harness's own dialect (`lib/glob.mjs`): `*` within a segment, `**/` across segments, **no braces** (refused — list `.ts` and `.tsx` separately). Mirror each runner's own discovery (e.g. Vitest's `include`). |
 | `testCommand` | Must contain `{tests}`. |
@@ -201,7 +201,7 @@ decided before any command runs (`deriveGateScope`, `lib/gate-scope.mjs`), and r
 | `reason` | When | Gates run |
 |---|---|---|
 | `mutants` | Every selected mutant's routes are known statically: file or `"names"` narrowing, `--learn` **with** refs, a ref naming a file this tree lacks (routing is a glob match). Reused (`--resume`) mutants count | The union of their non-opt-in `narrowing.routes`; a union covering every non-opt-in route is the whole harness, with the same key and records as an unscoped run |
-| `unscopable-mutant` | **Any one** selected mutant whose routes are not known: a per-mutant `narrowCommand`, the `--learn` no-refs fallback, a narrowed command equal to `baselineCommand`, or a mutant that fails to plan (no refs in counted mode, a ref no route owns). `detail` names it | Every non-opt-in route |
+| `unscopable-mutant` | **Any one** selected mutant whose routes are not known: a per-mutant `narrowCommand`, the `--learn` no-refs fallback, or a mutant that fails to plan (no refs in counted mode, a ref no route owns). `detail` names it | Every non-opt-in route |
 | `opt-in-only` | Every mutant runs only opt-in routes (the baseline needs a route to run) | Every non-opt-in route |
 | `no-mutants` | A bare `baseline`, or an empty catalog | Every non-opt-in route |
 | `route-flag` | `baseline --route <name> …` | The named routes; naming every non-opt-in route is the whole harness |
@@ -510,7 +510,8 @@ finding can be pointed at exactly the commit it was found against.
   resumed:   { journal, key, reused, ran } | null,   // non-null iff --resume was passed
   resumable: { key, available } | null,             // ADVISORY: a journal matches and --resume was NOT passed
   gateScope: { routes: [name], reason, detail },   // ROUTED ONLY -- absent for a single runner. The routes
-                                                   // the baseline and baseline-scope canary ran; reason is one
+                                                   // the gate records are about, whether measured here or
+                                                   // served from cache (a skipped canary attests none); reason is one
                                                    // of GateScopeReason (lib/gate-scope.mjs), see "The gates'
                                                    // route scope"
   gateCache: { status: "hit"|"miss"|"bypassed",
@@ -717,7 +718,8 @@ a refusal, never a gate, no effect on the exit code.
 
 ## Caching the gates
 
-The **baseline** gate is a **fixed cost paid once per invocation**, independent of mutant count.
+The **baseline** gate is a **fixed cost paid once per invocation**, independent of mutant count (under
+routing the mutants only choose its [route scope](#the-gates-route-scope)).
 Measured on code-conductor (`npm test` ≈ 67 s, 35-mutant catalog) **before the canary was narrowed**,
 when the floor was two full `baselineCommand` runs and the whole gate cost was therefore fixed:
 ~135,000 ms, **98.6% of a single-mutant invocation**. The floor is now one full run plus one narrow
@@ -772,7 +774,8 @@ contradict each other.
 **Location:** `.mutation/gates/<key>.json`, beside `.mutation/journal/` and `.mutation/results/` and
 with the same lifetime — one review loop, gitignored, dies with the worktree. Written atomically
 (temp file + rename in the same directory), so a SIGKILL mid-write leaves no half-entry. One entry
-per distinct tree+config; no pruning.
+per distinct key — under routing one tree can hold a whole-harness entry beside one per scoped
+`gateRoutes` ([the key](#caching-the-gates), below); no pruning.
 
 **`<key>` is `sha256` over these inputs, truncated to 32 hex** (the same shape as the journal key):
 

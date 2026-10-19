@@ -1280,4 +1280,18 @@ describe('baseline --no-canary and the canary-slot fill', () => {
       );
     } finally { repo.cleanup(); }
   });
+
+  // Invariant: below the CLI too, no caller can name a gate scope for a run that
+  // has mutants -- a named scope could leave out a route a mutant runs.
+  test('C11: the runner refuses a named gate scope for a run that has mutants', async () => {
+    const repo = makeRepo({ files: guardFiles(), config: countingConfig(), label: 'gr-invariant' });
+    try {
+      const config = loadConfig({ repoRoot: repo.root });
+      const adapter = await loadAdapter(config.runner, { configDir: config.configDir });
+      await assert.rejects(
+        execute({ config, adapter, mutants: [MUTANT], gateRoutes: ['unit'] }),
+        /gateRoutes/,
+      );
+    } finally { repo.cleanup(); }
+  });
 });

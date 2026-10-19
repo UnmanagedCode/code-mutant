@@ -1,5 +1,5 @@
 // Opt-in routes (`"optIn": true`). Invariant for the whole file: an opt-in route
-// is left out of the whole-suite baseline and the baseline-scope canary, runs only
+// is left out of the baseline gate and the baseline-scope canary, runs only
 // when a ref names a file it owns, and then gets every narrow gate -- it can only
 // ever make a verdict harder to get.
 //
@@ -70,7 +70,7 @@ const byId = (report) => Object.fromEntries(report.results.map((r) => [r.id, r])
 const SKIPPED = [{ route: 'spec', runner: 'node-test', reason: 'opt-in' }];
 
 describe('baseline skips an opt-in route', () => {
-  // Invariant: the whole-suite baseline and its canary never run an opt-in route
+  // Invariant: the baseline gate and its canary never run an opt-in route
   // (the red spec would fail them) and say so in `skippedRoutes`, not in groups.
   test('baseline and baseline-scope canary run only the other routes and report the skipped one', async () => {
     const repo = optInRepo('optin-baseline');
