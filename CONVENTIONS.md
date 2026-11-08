@@ -76,7 +76,7 @@ This file, each project's `CLAUDE.md`, everything they import, and the conductor
 - Use the language's built-in test runner unless the project already uses another framework; avoid adding dependencies.
 - When presenting an implementation plan, include an "Integration tests" section listing the actual test files, what they cover, and the run command — not a "Manual verification" section.
 - Run tests as the last implementation step and report pass/fail; don't ask the user to verify by hand.
-- Assert the contract a test's subject owes its caller or user — behavior, state transitions, emitted events/calls, returned data, accessible role/name — not incidental presentation or wording (pixel values, colors, class names, CSS text, exact copy), unless that value is itself the requirement (a protocol string, a palette a guard test enforces). Verify appearance visually, not in unit tests.
+- Assert the contract a test's subject owes its caller or user — behavior, state transitions, emitted events/calls, returned data, accessible role/name — not incidental presentation, wording or data (pixel values, colors, class names, CSS text, exact copy, static or default configuration and its structure, data blobs such as images or SVG), unless that value is itself the requirement (a protocol string, a palette a guard test enforces). Verify appearance visually, not in unit tests.
 
 ## Documentation guidelines
 Layer docs; on any behavior change, update the most specific file(s) — not just the README.
@@ -93,6 +93,6 @@ This project reports its work to the conductor's `code-kanban` board.
 - **Proactively file** substantive work you discover (a bug, a follow-up, a discovery you
   shouldn't just fix inline) with `file_card`, passing title/goal/acceptance only — leave `epic`
   to the conductor.
-- **Log one short line per meaningful step** via `log_card`. If it returns
-  `{ok:false, code:"CARD_UNKNOWN"}`, say so and carry on; don't retry in a loop.
+- **Log one short line per meaningful step** via `log_card`. If it is refused
+  with code `CARD_UNKNOWN`, say so and carry on; don't retry in a loop.
 - Don't block on the board — the conductor triages `triage` on its own cadence.
