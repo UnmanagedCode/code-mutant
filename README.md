@@ -49,10 +49,12 @@ Contributions-only — no backend, no frontend, no MCP server. Enabling it never
   real test command once and matching its captured output, sets `baseBranch` to the branch the
   project actually merges into, and adds `.mutation/` to the project's own `.gitignore`. It creates
   neither a mutant catalog nor a canary — both are per-review/per-run.
-- **`demand-mutation-verified`** (`scope: "conductor"`) — the plugin's only prompt fragment. Briefs
-  the conductor to spawn a dedicated prover to mutation-prove coverage claims via
-  `/code-mutant:prove` rather than trust the implementer's report, and to treat a project with no
-  harness as configured for none.
+- **`demand-mutation-verified`** (`scope: "conductor"`) — the plugin's only prompt fragment, split by
+  a `<!-- cc:skill -->` marker. The inline part briefs the conductor on the implementer-facing rules
+  (state the invariant each test pins, commit before the prover starts, never brief breaking source
+  to watch a test fail). The skill part, delivered as `cc-conductor-code-mutant:demand-mutation-verified`,
+  holds the prover procedure: spawning a dedicated prover to run `/code-mutant:prove`, arbitrating
+  survivors, and treating a project with no harness as configured for none.
 - **`claudePlugin: "."`** — this project root doubles as the Claude Code plugin root, so
   `skills/prove/SKILL.md` resolves as `/code-mutant:prove` for every worker, whether or not the
   project it's invoked in was ever scaffolded.

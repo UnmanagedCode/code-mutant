@@ -1,6 +1,18 @@
 # Demand mutation-verified coverage
 
-One evidence form added to the review→refine loop: a **prover** mutation-proves "covered" claims.
+One evidence form added to the review→refine loop: a dedicated **prover** mutation-proves "covered"
+claims. To spawn, brief or arbitrate one, invoke the skill `cc-conductor-code-mutant:demand-mutation-verified`.
+
+- **Brief the implementer** — have it state which invariant each test pins, and nothing further:
+  that statement is its whole coverage duty, and the claims will be independently mutated, not
+  re-read. Have it commit before the prover starts.
+- **Never brief the implementer to break source to watch a test fail** — no mutating, reverting,
+  stubbing or perturbing, wherever the mutant lives; a path-scoped ban ("don't touch
+  `.mutation/`") is not this ban, since one told to prove its tests fail hand-rolls mutants under
+  `/tmp` and satisfies it exactly. Test-first ordering is the sanctioned alternative — afterwards
+  only a mutant produces the unfixed behaviour.
+
+<!-- cc:skill Use when spawning, briefing or arbitrating a mutation prover. -->
 
 - **Spawn a dedicated prover to run `/code-mutant:prove`** against the implementer's coverage
   claims — never the implementer, never an extra duty on a lens reviewer's brief. It is a role,
@@ -10,15 +22,8 @@ One evidence form added to the review→refine loop: a **prover** mutation-prove
   concurrent prover is refused (`inplace-locked`), burns a worker and proves nothing.
 - **Trust the runner's non-zero exit for un-waived survivors over the prover's self-reported
   verdict**, and hold its every verdict to "a test that passes either way proves nothing."
-- **Brief the implementer too** — have it state which invariant each test pins, and nothing
-  further: that statement is its whole coverage duty, and the claims will be independently
-  mutated, not re-read. Have it commit before the prover starts, and relay a dirty-worktree
-  refusal back to it rather than waiving the gate — the prover can't commit on its behalf.
-- **Never brief the implementer to break source to watch a test fail** — no mutating, reverting,
-  stubbing or perturbing, wherever the mutant lives; a path-scoped ban ("don't touch
-  `.mutation/`") is not this ban, since one told to prove its tests fail hand-rolls mutants under
-  `/tmp` and satisfies it exactly. Test-first ordering is the sanctioned alternative — afterwards
-  only a mutant produces the unfixed behaviour.
+- **Relay a dirty-worktree refusal back to the implementer** rather than waiving the gate — the
+  prover can't commit on its behalf.
 - **Arbitrate survivors like any other review finding** — a `SURVIVED` verdict is one to weigh,
   not an automatic block. Relay what's worth fixing as the invariant that needs a test, never as a
   mutant to re-run, and waive the rest explicitly or the prover re-reports them every round.
